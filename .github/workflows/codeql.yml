@@ -36,8 +36,10 @@ jobs:
           # Android project. The real Gradle build below is what makes the source analyzable.
           build-mode: manual
 
+      # CodeQL extracts Kotlin by tracing the compiler, so the compile tasks have to actually run.
+      # Served from the build cache that CI populates, they produce no source and the analysis fails.
       - name: Build
-        run: ./gradlew :consentiq-android:assembleRelease :consentiq-android-compose:assembleRelease --no-daemon
+        run: ./gradlew :consentiq-android:assembleRelease :consentiq-android-compose:assembleRelease --no-daemon --no-build-cache --rerun-tasks
 
       - uses: github/codeql-action/analyze@v3
         with:
