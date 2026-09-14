@@ -1,0 +1,44 @@
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '41 5 * * 1'
+
+jobs:
+  analyze:
+    name: Analyze Kotlin
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      contents: read
+      actions: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: android-actions/setup-android@v3
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: java-kotlin
+          # Default setup analyzes Kotlin with build-mode "none", which extracts nothing from an
+          # Android project. The real Gradle build below is what makes the source analyzable.
+          build-mode: manual
+
+      - name: Build
+        run: ./gradlew :consentiq-android:assembleRelease :consentiq-android-compose:assembleRelease --no-daemon
+
+      - uses: github/codeql-action/analyze@v3
+        with:
+          category: /language:java-kotlin
