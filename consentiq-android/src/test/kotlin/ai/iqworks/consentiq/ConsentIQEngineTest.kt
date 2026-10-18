@@ -66,7 +66,10 @@ class ConsentIQEngineTest {
         onClose = { closes += Unit },
     )
 
-    private fun TestScope.engine(config: ConsentIQConfig = config()): ConsentIQEngine {
+    private fun TestScope.engine(
+        config: ConsentIQConfig = config(),
+        captcha: CaptchaTokenProvider = CaptchaTokenProvider.UNAVAILABLE,
+    ): ConsentIQEngine {
         val api =
             ConsentIQApiClient(
                 propertyKey = Fixtures.PROPERTY_KEY,
@@ -74,7 +77,7 @@ class ConsentIQEngineTest {
                 http = http,
                 ioDispatcher = dispatcher,
             )
-        return ConsentIQEngine(config, store, api, logger, state)
+        return ConsentIQEngine(config, store, api, logger, state, captcha)
     }
 
     private fun FakeHttpExecutor.onConsentLookup(body: String) {
@@ -242,32 +245,94 @@ class ConsentIQEngineTest {
         }
 
     @Test
-    fun captchaWarningIsLoggedExactlyOnce() =
+    fun requiredCaptchaSendsAFreshTokenWithEverySubmitAndNoneAtInit() =
         runTest(dispatcher) {
             http.on("GET", "/api/public/config/${Fixtures.PROPERTY_KEY}", body = Fixtures.configJson(requireCaptcha = true))
             http.onConsentLookup(Fixtures.NO_CONSENT)
-            val engine = engine()
+            val captcha = FakeCaptchaProvider { "tok" }
+            val engine = engine(captcha = captcha)
 
             engine.initialize()
-            engine.acceptAll()
-            engine.rejectAll()
+            assertEquals(0, captcha.calls)
 
-            assertEquals(1, logger.warnings.count { it == ConsentIQEngine.CAPTCHA_WARNING })
-            assertEquals(
-                "[ConsentIQ] This property requires a captcha, which mobile SDKs cannot satisfy. " +
-                    "Turn off \"Require captcha\" for this property in the ConsentIQ dashboard.",
-                ConsentIQEngine.CAPTCHA_WARNING,
-            )
+            engine.acceptAll()
+            engine.updateMarketingConsent(mapOf("email" to true))
+
+            val posts = http.posts()
+            assertEquals(2, posts.size)
+            assertTrue(posts.all { it.getString("captchaToken") == "tok" })
+            assertEquals(2, captcha.calls)
+            assertEquals(2, changes.size)
+            assertTrue(logger.warnings.isEmpty())
         }
 
     @Test
-    fun captchaWarningIsNotLoggedWhenNotRequired() =
+    fun captchaFailureSendsNothingKeepsLocalStateAndWarns() =
+        runTest(dispatcher) {
+            http.on("GET", "/api/public/config/${Fixtures.PROPERTY_KEY}", body = Fixtures.configJson(requireCaptcha = true))
+            http.onConsentLookup(Fixtures.NO_CONSENT)
+            val engine = engine(captcha = FakeCaptchaProvider { throw CaptchaException("timeout") })
+            engine.initialize()
+
+            engine.acceptAll()
+
+            assertTrue(http.posts().isEmpty())
+            assertTrue(state.value.hasConsent("analytics"))
+            assertFalse(state.value.isSheetVisible)
+            assertEquals(1, accepts.size)
+            assertTrue(changes.isEmpty())
+            assertNull(store.loadConsent())
+            assertEquals(listOf("[ConsentIQ] Captcha check failed; consent not submitted"), logger.warnings)
+            assertTrue(logger.errors.isEmpty())
+            assertTrue(logger.debugs.none { it.contains(engine.subjectId) })
+        }
+
+    @Test
+    fun captchaIsSkippedWhenNotRequired() =
         runTest(dispatcher) {
             http.onConsentLookup(Fixtures.NO_CONSENT)
+            val captcha = FakeCaptchaProvider()
+            val engine = engine(captcha = captcha)
+            engine.initialize()
 
-            engine().initialize()
+            engine.acceptAll()
 
-            assertTrue(logger.warnings.none { it == ConsentIQEngine.CAPTCHA_WARNING })
+            assertEquals(0, captcha.calls)
+            assertFalse(http.posts().single().has("captchaToken"))
+        }
+
+    @Test
+    fun captchaIsSkippedWithoutASiteKey() =
+        runTest(dispatcher) {
+            http.on(
+                "GET",
+                "/api/public/config/${Fixtures.PROPERTY_KEY}",
+                body = Fixtures.configJson(requireCaptcha = true, turnstileSiteKey = null),
+            )
+            http.onConsentLookup(Fixtures.NO_CONSENT)
+            val captcha = FakeCaptchaProvider()
+            val engine = engine(captcha = captcha)
+            engine.initialize()
+
+            engine.acceptAll()
+
+            assertEquals(0, captcha.calls)
+            assertFalse(http.posts().single().has("captchaToken"))
+        }
+
+    @Test
+    fun loadedConfigIsSharedOnlyForTheSamePropertyAndServer() =
+        runTest(dispatcher) {
+            http.onConsentLookup(Fixtures.NO_CONSENT)
+            val engine = engine()
+            assertNull(engine.loadedConfigFor(Fixtures.PROPERTY_KEY, "http://stub"))
+
+            engine.initialize()
+
+            assertNotNull(engine.loadedConfigFor(Fixtures.PROPERTY_KEY, "http://stub"))
+            assertNotNull(engine.loadedConfigFor(Fixtures.PROPERTY_KEY, "http://stub/"))
+            assertNull(engine.loadedConfigFor("pk_other", "http://stub"))
+            assertNull(engine.loadedConfigFor(Fixtures.PROPERTY_KEY, "http://elsewhere"))
         }
 
     @Test

@@ -1,5 +1,6 @@
 package ai.iqworks.consentiq
 
+import android.app.Application
 import android.content.Context
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -24,6 +25,10 @@ public object ConsentIQ {
     @Volatile
     private var logger: ConsentIQLogger = AndroidLogger(debug = false)
 
+    private var appContext: Context? = null
+    private var activities: ForegroundActivityTracker? = null
+    private val captchaProviders = HashMap<String, CaptchaTokenProvider>()
+
     public val isInitialized: Boolean
         get() = engine != null
 
@@ -36,12 +41,15 @@ public object ConsentIQ {
         config: ConsentIQConfig,
     ) {
         if (engine != null && activeConfig == config) return
+        trackActivities(context.applicationContext)
         val log = AndroidLogger(config.debug)
+        val api = ConsentIQApiClient(config.propertyKey, config.apiUrl, logger = log)
         initWith(
             config = config,
             store = ConsentStore(SharedPreferencesStorage(context)),
-            api = ConsentIQApiClient(config.propertyKey, config.apiUrl, logger = log),
+            api = api,
             logger = log,
+            captcha = captchaProviderFor(api.baseUrl),
         )
     }
 
@@ -51,15 +59,34 @@ public object ConsentIQ {
         store: ConsentStore,
         api: ConsentIQApiClient,
         logger: ConsentIQLogger,
+        captcha: CaptchaTokenProvider = CaptchaTokenProvider.UNAVAILABLE,
     ): Job {
         val running = initJob
         if (engine != null && activeConfig == config && running != null) return running
         running?.cancel()
-        val next = ConsentIQEngine(config, store, api, logger, mutableState)
+        val next = ConsentIQEngine(config, store, api, logger, mutableState, captcha)
         this.logger = logger
         activeConfig = config
         engine = next
         return scope.launch { next.initialize() }.also { initJob = it }
+    }
+
+    internal fun loadedConfigFor(
+        propertyKey: String,
+        baseUrl: String,
+    ): PropertyConfig? = engine?.loadedConfigFor(propertyKey, baseUrl)
+
+    @Synchronized
+    internal fun captchaProviderFor(baseUrl: String): CaptchaTokenProvider {
+        val context = appContext ?: return CaptchaTokenProvider.UNAVAILABLE
+        return captchaProviders.getOrPut(baseUrl.trimEnd('/')) { WebViewCaptchaProvider(context, baseUrl, activities) }
+    }
+
+    private fun trackActivities(context: Context) {
+        if (appContext != null) return
+        appContext = context
+        val application = context as? Application ?: return
+        activities = ForegroundActivityTracker().also { application.registerActivityLifecycleCallbacks(it) }
     }
 
     public fun hasConsent(category: String): Boolean = state.value.hasConsent(category)

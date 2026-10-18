@@ -185,6 +185,7 @@ class ConsentIQApiClientTest {
             assertTrue(body.getJSONObject("marketingConsents").getBoolean("email"))
             assertFalse(body.has("subjectType"))
             assertFalse(body.has("consentVersion"))
+            assertFalse(body.has("captchaToken"))
             assertTrue(result.success)
             assertEquals("c-123", result.consentId)
             assertEquals("abc", result.proofHash)

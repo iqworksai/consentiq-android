@@ -3,11 +3,13 @@ package ai.iqworks.consentiq
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.runTest
+import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Before
 import org.junit.Test
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -18,24 +20,40 @@ class FormConsentTest {
     private val submitted = mutableListOf<FormConsentResult>()
     private val changes = mutableListOf<Map<String, Boolean>>()
 
+    private val configPath = "/api/public/config/${Fixtures.PROPERTY_KEY}"
+
+    @Before
+    fun setUp() {
+        http.on("GET", configPath, body = Fixtures.configJson())
+    }
+
     private fun form(
         subjectId: String = "user-1",
         channels: List<String> = FormConsent.DEFAULT_CHANNELS,
+        sharedConfig: PropertyConfig? = null,
+        captcha: CaptchaTokenProvider = CaptchaTokenProvider.UNAVAILABLE,
     ) = FormConsent(
         propertyKey = Fixtures.PROPERTY_KEY,
         subjectId = subjectId,
+        subjectType = "user",
         channels = channels,
         onConsentSubmitted = { submitted += it },
         onConsentChange = { changes += it },
         api = ConsentIQApiClient(Fixtures.PROPERTY_KEY, "http://stub", http, dispatcher),
         logger = logger,
+        sharedConfig = { key, baseUrl -> sharedConfig?.takeIf { key == Fixtures.PROPERTY_KEY && baseUrl == "http://stub" } },
+        captcha = { captcha },
     )
+
+    private fun captchaConfig(): PropertyConfig = parsePropertyConfig(JSONObject(Fixtures.configJson(requireCaptcha = true)))
+
+    private fun configRequests() = http.requests.count { it.method == "GET" && it.url.endsWith(configPath) }
 
     @Test
     fun defaultsToTheFourChannelsOff() {
         assertEquals(
             mapOf("email" to false, "sms" to false, "whatsapp" to false, "push" to false),
-            form().consents.value,
+            FormConsent(propertyKey = Fixtures.PROPERTY_KEY, subjectId = "user-1").consents.value,
         )
     }
 
@@ -96,6 +114,81 @@ class FormConsentTest {
             assertEquals(listOf("[ConsentIQ] Failed to submit form consent: Failed to save consent"), logger.errors)
             assertTrue(submitted.isEmpty())
             assertFalse(form.isSubmitting.value)
+        }
+
+    @Test
+    fun captchaTokenComesFromTheSharedConfigWithoutFetchingAgain() =
+        runTest(dispatcher) {
+            http.on("POST", "/api/public/consent", body = Fixtures.SUBMIT_OK)
+            val captcha = FakeCaptchaProvider { "tok" }
+            val form = form(sharedConfig = captchaConfig(), captcha = captcha)
+
+            assertNotNull(form.submit())
+
+            assertEquals("tok", http.posts().single().getString("captchaToken"))
+            assertEquals(1, captcha.calls)
+            assertEquals(0, configRequests())
+        }
+
+    @Test
+    fun configIsFetchedOncePerInstanceWhenNotShared() =
+        runTest(dispatcher) {
+            http.on("GET", configPath, body = Fixtures.configJson(requireCaptcha = true))
+            http.on("POST", "/api/public/consent", body = Fixtures.SUBMIT_OK)
+            val captcha = FakeCaptchaProvider { "tok" }
+            val form = form(captcha = captcha)
+
+            assertNotNull(form.submit())
+            assertNotNull(form.submit())
+
+            assertEquals(1, configRequests())
+            assertEquals(2, captcha.calls)
+            assertTrue(http.posts().all { it.getString("captchaToken") == "tok" })
+        }
+
+    @Test
+    fun captchaFailureSendsNothingAndReturnsNull() =
+        runTest(dispatcher) {
+            http.on("POST", "/api/public/consent", body = Fixtures.SUBMIT_OK)
+            val form = form(sharedConfig = captchaConfig(), captcha = FakeCaptchaProvider { throw CaptchaException("timeout") })
+            form.setChannel("email", true)
+
+            assertNull(form.submit())
+
+            assertTrue(http.posts().isEmpty())
+            assertTrue(submitted.isEmpty())
+            assertTrue(form.consents.value.getValue("email"))
+            assertFalse(form.isSubmitting.value)
+            assertEquals(listOf("[ConsentIQ] Captcha check failed; consent not submitted"), logger.warnings)
+            assertTrue(logger.errors.isEmpty())
+        }
+
+    @Test
+    fun captchaIsSkippedWhenNotRequired() =
+        runTest(dispatcher) {
+            http.on("POST", "/api/public/consent", body = Fixtures.SUBMIT_OK)
+            val captcha = FakeCaptchaProvider()
+
+            assertNotNull(form(captcha = captcha).submit())
+
+            assertEquals(0, captcha.calls)
+            assertFalse(http.posts().single().has("captchaToken"))
+        }
+
+    @Test
+    fun configFetchFailureStillSubmitsWithoutAToken() =
+        runTest(dispatcher) {
+            http.on("GET", configPath, status = 503, body = "{}")
+            http.on("POST", "/api/public/consent", body = Fixtures.SUBMIT_OK)
+            val captcha = FakeCaptchaProvider()
+            val form = form(captcha = captcha)
+
+            assertNotNull(form.submit())
+            assertNotNull(form.submit())
+
+            assertEquals(0, captcha.calls)
+            assertEquals(2, configRequests())
+            assertTrue(http.posts().none { it.has("captchaToken") })
         }
 
     @Test

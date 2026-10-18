@@ -226,5 +226,6 @@ internal fun ConsentSubmission.toJson(propertyKey: String): JSONObject {
     geoSource?.let { json.put("geoSource", it) }
     json.put("consentMethod", consentMethod)
     consentVersion?.let { json.put("consentVersion", it) }
+    captchaToken?.let { json.put("captchaToken", it) }
     return json
 }

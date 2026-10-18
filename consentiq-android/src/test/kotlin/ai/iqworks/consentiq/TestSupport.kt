@@ -70,11 +70,24 @@ class FakeHttpExecutor : HttpExecutor {
     fun posts(): List<JSONObject> = requests.filter { it.method == "POST" }.map { JSONObject(it.body!!) }
 }
 
+internal class FakeCaptchaProvider(
+    private val result: () -> String = { "tok" },
+) : CaptchaTokenProvider {
+    var calls = 0
+
+    override suspend fun token(): String {
+        calls++
+        return result()
+    }
+}
+
 object Fixtures {
     const val PROPERTY_KEY = "pk_test_android"
+    const val SITE_KEY = "0x4AAAAAAAtest"
 
     fun configJson(
         requireCaptcha: Boolean = false,
+        turnstileSiteKey: String? = if (requireCaptcha) SITE_KEY else null,
         defaultLanguage: String = "en",
         noticeUrl: String? = "https://consent.example.test/api/public/privacy/pk_test_android?notice=n1",
         primaryColor: String? = "#123456",
@@ -83,6 +96,7 @@ object Fixtures {
         val notice = if (noticeUrl == null) "null" else "\"$noticeUrl\""
         val color = if (primaryColor == null) "" else "\"primaryColor\": \"$primaryColor\","
         val regulation = if (resolvedRegulation == null) "null" else "\"$resolvedRegulation\""
+        val siteKey = if (turnstileSiteKey == null) "null" else "\"$turnstileSiteKey\""
         return """
             {
               "property": {
@@ -109,7 +123,7 @@ object Fixtures {
               "formConsentSources": [ { "selector": null, "isAutoResolved": false, "privacyNotice": { "id": "n1", "name": "Cookie notice", "type": "cookie" } } ],
               "privacyNoticeUrl": "/api/public/privacy/pk_test_android",
               "requireCaptcha": $requireCaptcha,
-              "turnstileSiteKey": null,
+              "turnstileSiteKey": $siteKey,
               "autoBlock": false,
               "translations": {
                 "en": { "bannerDescription": "We use cookies.", "categories": { "analytics": { "title": "Analytics", "description": "Usage stats" } } },

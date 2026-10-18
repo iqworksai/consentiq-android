@@ -149,6 +149,7 @@ public data class ConsentSubmission(
     val geoSource: String? = null,
     val consentMethod: String = "sdk",
     val consentVersion: String? = null,
+    val captchaToken: String? = null,
 )
 
 public data class SubmitResult(

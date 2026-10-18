@@ -4,7 +4,7 @@ The Android SDK for [ConsentIQ](https://consent.iqworks.ai), the IQWorks consent
 
 Two artifacts are published to Maven Central:
 
-- `ai.iqworks:consentiq-android`: the client, models, storage and state machine. Depends only on `kotlinx-coroutines-android`.
+- `ai.iqworks:consentiq-android`: the client, models, storage and state machine. Depends on `kotlinx-coroutines-android` and `androidx.webkit`.
 - `ai.iqworks:consentiq-android-compose`: a Jetpack Compose `ConsentSheet` and `ConsentGate` on top of the core. Pulls the core in transitively.
 
 Requirements: minSdk 24, Kotlin 2.x, Jetpack Compose with Material 3 for the Compose module.
@@ -15,7 +15,7 @@ With Compose (recommended):
 
 ```kotlin
 dependencies {
-    implementation("ai.iqworks:consentiq-android-compose:1.0.1")
+    implementation("ai.iqworks:consentiq-android-compose:1.1.0")
 }
 ```
 
@@ -23,7 +23,7 @@ Core only, if you render your own consent UI:
 
 ```kotlin
 dependencies {
-    implementation("ai.iqworks:consentiq-android:1.0.1")
+    implementation("ai.iqworks:consentiq-android:1.1.0")
 }
 ```
 
@@ -160,7 +160,7 @@ All callbacks are optional fields on `ConsentIQConfig` and run on the thread tha
 
 ## Limitations
 
-- Captcha. If "Require captcha" is turned on for the property, every consent submission from this SDK is refused with HTTP 400, because Cloudflare Turnstile has no native Android SDK. The SDK logs `[ConsentIQ] This property requires a captcha, which mobile SDKs cannot satisfy. Turn off "Require captcha" for this property in the ConsentIQ dashboard.` once at startup. Turn the setting off for mobile properties.
+- Captcha. When "Require CAPTCHA" is on for the property, the SDK runs Cloudflare Turnstile invisibly in a hidden web view, loaded from `consent.iqworks.ai` (your `apiUrl`) and `challenges.cloudflare.com`, before each submit. If the check fails or Turnstile asks for user interaction, nothing is sent, the local state is kept, and the SDK logs `[ConsentIQ] Captcha check failed; consent not submitted`. `FormConsent` uses the web view that `ConsentIQ.init` sets up, so call `init` first. List Cloudflare Turnstile in your app's privacy disclosures.
 - Regulation detection uses the server's view of the device's IP address. There is no client-side override.
 - The SDK does not block third-party SDKs on its own. Read `hasConsent` before starting them.
 

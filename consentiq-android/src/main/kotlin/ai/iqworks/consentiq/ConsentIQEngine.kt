@@ -10,17 +10,27 @@ internal class ConsentIQEngine(
     private val api: ConsentIQApiClient,
     private val logger: ConsentIQLogger,
     private val state: MutableStateFlow<ConsentIQState>,
+    private val captcha: CaptchaTokenProvider = CaptchaTokenProvider.UNAVAILABLE,
 ) {
     @Volatile
     var subjectId: String = ""
         private set
 
+    @Volatile
+    private var loadedConfig: PropertyConfig? = null
+
+    fun loadedConfigFor(
+        propertyKey: String,
+        baseUrl: String,
+    ): PropertyConfig? = loadedConfig?.takeIf { config.propertyKey == propertyKey && api.baseUrl == baseUrl.trimEnd('/') }
+
     suspend fun initialize() {
         state.value = ConsentIQState()
+        loadedConfig = null
         try {
             subjectId = resolveSubjectId()
             val propertyConfig = api.getConfig()
-            if (propertyConfig.requireCaptcha) logger.warn(CAPTCHA_WARNING)
+            loadedConfig = propertyConfig
             val language =
                 config.language
                     ?: propertyConfig.property.defaultLanguage?.takeIf { it.isNotBlank() }
@@ -145,6 +155,12 @@ internal class ConsentIQEngine(
             logger.debug("[ConsentIQ] No subject id; consent kept locally only")
             return
         }
+        val captchaToken =
+            if (loadedConfig.requiresCaptcha()) {
+                captcha.tokenOrWarn(logger) ?: return
+            } else {
+                null
+            }
         try {
             api.submitConsent(
                 ConsentSubmission(
@@ -152,6 +168,7 @@ internal class ConsentIQEngine(
                     cookieConsents = cookie,
                     marketingConsents = marketing,
                     consentMethod = "sdk",
+                    captchaToken = captchaToken,
                 ),
             )
             store.saveConsent(cookie)
@@ -167,8 +184,5 @@ internal class ConsentIQEngine(
 
     companion object {
         const val NECESSARY = "necessary"
-        const val CAPTCHA_WARNING =
-            "[ConsentIQ] This property requires a captcha, which mobile SDKs cannot satisfy. " +
-                "Turn off \"Require captcha\" for this property in the ConsentIQ dashboard."
     }
 }
