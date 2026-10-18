@@ -15,7 +15,7 @@ With Compose (recommended):
 
 ```kotlin
 dependencies {
-    implementation("ai.iqworks:consentiq-android-compose:1.0.0")
+    implementation("ai.iqworks:consentiq-android-compose:1.0.1")
 }
 ```
 
@@ -23,7 +23,7 @@ Core only, if you render your own consent UI:
 
 ```kotlin
 dependencies {
-    implementation("ai.iqworks:consentiq-android:1.0.0")
+    implementation("ai.iqworks:consentiq-android:1.0.1")
 }
 ```
 
@@ -126,12 +126,12 @@ Every write updates the state first, then posts the consent to ConsentIQ, then p
 | Field | Default | Meaning |
 | --- | --- | --- |
 | `propertyKey` | required | The property's public key |
-| `apiUrl` | `https://consent.iqworks.ai` | Override for self-hosted or test environments |
-| `subjectId` | `null` | Supply your own subject id instead of a generated one |
+| `apiUrl` | `https://consent.iqworks.ai` | ConsentIQ base URL |
+| `subjectId` | `null` | Supply your own subject id instead of a generated one. It must be random and unguessable, never an account number, email address or phone number: the consent lookup needs only the property key, which ships in your app |
 | `autoGenerateSubjectId` | `true` | Generate and persist a UUID when no subject id is supplied |
 | `autoShow` | `true` | Show the sheet automatically when no consent is found |
 | `language` | `null` | Force a language; otherwise the property's default language, then `en` |
-| `debug` | `false` | Log request details to Logcat under the `ConsentIQ` tag |
+| `debug` | `false` | Log request details to Logcat under the `ConsentIQ` tag. Turn it on in debug builds only |
 
 Marketing forms: `FormConsent` mirrors the marketing form helper in the web SDKs. It holds a map of channels (default `email`, `sms`, `whatsapp`, `push`), exposes `toggleChannel`, `setChannel`, `reset` and a `suspend fun submit()` that posts the selection with `subjectType = "user"` and `consentMethod = "form"`.
 

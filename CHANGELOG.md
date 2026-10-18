@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.1
+
+- Debug logs no longer include the subject id.
+- The example app turns on debug logging in debuggable builds only.
+- README: a caller-supplied `subjectId` must be random and unguessable.
+
 ## 1.0.0
 
 Initial release.

@@ -20,12 +20,12 @@ public class ConsentIQApiClient(
     }
 
     public suspend fun getConsent(subjectId: String): ConsentLookup {
-        logger.debug("[ConsentIQ] Fetching consent for subject $subjectId")
+        logger.debug("[ConsentIQ] Fetching consent")
         return parseConsentLookup(request("GET", "$baseUrl/api/public/consent/$propertyKey/$subjectId"))
     }
 
     public suspend fun submitConsent(submission: ConsentSubmission): SubmitResult {
-        logger.debug("[ConsentIQ] Submitting consent for subject ${submission.subjectId}")
+        logger.debug("[ConsentIQ] Submitting consent via ${submission.consentMethod}")
         return parseSubmitResult(request("POST", "$baseUrl/api/public/consent", submission.toJson(propertyKey)))
     }
 
