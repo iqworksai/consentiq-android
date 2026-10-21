@@ -27,6 +27,7 @@ public data class PropertyConfig(
     val translations: Map<String, TranslationSet>,
     val labels: Map<String, BannerLabels>,
     val rtl: List<String>,
+    val tcf: TcfSettings? = null,
 ) {
     public fun labelsFor(language: String): BannerLabels? = labels[language] ?: labels[baseTag(language)] ?: labels["en"]
 
@@ -124,6 +125,25 @@ public data class BannerLabels(
     val viewNotice: String,
 )
 
+public data class TcfSettings(
+    val enabled: Boolean,
+    val gdprApplies: Boolean,
+    val vendorIds: List<Int>,
+    val publisherCountryCode: String?,
+    val publisherRestrictions: List<TcfPublisherRestriction>,
+    val repromptMonths: Int?,
+    val tcfPolicyVersion: Int?,
+    val cmpId: Int,
+    val cmpVersion: Int?,
+    val vendorListUrl: String?,
+)
+
+public data class TcfPublisherRestriction(
+    val purposeId: Int,
+    val restrictionType: Int,
+    val vendorIds: List<Int>,
+)
+
 public data class SavedConsent(
     val id: String,
     val cookieConsents: Map<String, Boolean>,
@@ -185,6 +205,11 @@ public data class RejectInfo(
 
 public data class SaveInfo(
     val consent: Map<String, Boolean>,
+)
+
+public data class ErrorInfo(
+    val code: String,
+    val message: String?,
 )
 
 public class ConsentIQException(

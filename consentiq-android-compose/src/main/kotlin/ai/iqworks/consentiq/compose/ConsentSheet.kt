@@ -58,7 +58,7 @@ public const val DEFAULT_PRIMARY_COLOR: String = "#f97316"
 public fun ConsentSheet(consentIQ: ConsentIQ = ConsentIQ) {
     val state by consentIQ.state.collectAsStateWithLifecycle()
     val config = state.config
-    if (!state.isSheetVisible || config == null) return
+    if (!state.isSheetVisible || state.isTcfActive || config == null) return
 
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val scope = rememberCoroutineScope()

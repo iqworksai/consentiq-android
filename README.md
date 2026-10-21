@@ -98,6 +98,7 @@ State is exposed as `ConsentIQ.state: StateFlow<ConsentIQState>` with these fiel
 | `isSheetVisible` | Whether the consent sheet should be shown |
 | `language` | The language used for the sheet |
 | `regulation` | The regulation the server resolved for this visitor, for example `DPDPA`, `GDPR` or `null` |
+| `isTcfActive` | `true` when the IAB TCF screens replace the sheet for this visitor. See [IAB TCF](#iab-tcf) |
 
 Operations:
 
@@ -111,7 +112,8 @@ Operations:
 | `savePreferences(map)` | Records a custom selection from the sheet's category list |
 | `updateConsent(partial)` | Merges changes into the consent map and records them |
 | `updateMarketingConsent(partial)` | Merges changes into the marketing map and records them |
-| `showSheet()` | Opens the sheet and fires `onOpen` |
+| `showSheet()` | Opens the sheet and fires `onOpen`. When TCF is active, opens the TCF screens instead |
+| `showTcfPreferences()` | Re-opens the TCF screens. Returns `false`, and does nothing, when TCF is not active |
 | `hideSheet()` | Closes the sheet from your code. Fires nothing |
 | `dismissSheet()` | Closes the sheet on behalf of the visitor (back button, swipe). Fires `onClose` |
 | `resetConsent()` | Clears the consent map, the cache and the subject id, then generates a fresh subject id |
@@ -133,6 +135,8 @@ Every write updates the state first, then posts the consent to ConsentIQ, then p
 | `language` | `null` | Force a language; otherwise the property's default language, then `en` |
 | `debug` | `false` | Log request details to Logcat under the `ConsentIQ` tag. Turn it on in debug builds only |
 
+With `autoShow = false` and TCF active, the TCF screens also wait for `showSheet()`. `IABTCF_gdprApplies` is still written at start-up; whether a stored TC string is out of date is checked when the screens next open.
+
 Marketing forms: `FormConsent` mirrors the marketing form helper in the web SDKs. It holds a map of channels (default `email`, `sms`, `whatsapp`, `push`), exposes `toggleChannel`, `setChannel`, `reset` and a `suspend fun submit()` that posts the selection with `subjectType = "user"` and `consentMethod = "form"`.
 
 Lower level: `ConsentIQApiClient` wraps the four public endpoints (`getConfig`, `getConsent`, `submitConsent`, `verifyConsent`) and accepts a custom `HttpExecutor` for testing.
@@ -149,6 +153,23 @@ All callbacks are optional fields on `ConsentIQConfig` and run on the thread tha
 | `onReject(RejectInfo)` | The visitor rejected all optional categories |
 | `onSave(SaveInfo)` | The visitor saved a custom selection |
 | `onClose()` | The visitor backed out without answering. Never fires on accept, reject, save or `hideSheet()` |
+| `onError(ErrorInfo)` | Something the SDK could not do, with a stable `code` and a `message`. Today only the TCF screens report here: `tcf-unsupported`, `tcf-unavailable`, `tcf-timeout`, `tcf-load-failed`, `tcf-page-error` |
+
+## IAB TCF
+
+When TCF is on for the property in the ConsentIQ dashboard, the SDK acts as the app's IAB TCF CMP:
+
+- At start-up it writes `IABTCF_CmpSdkID` and `IABTCF_CmpSdkVersion` to the app's default `SharedPreferences` (`<package>_preferences`, the file `PreferenceManager.getDefaultSharedPreferences` returns), where vendor SDKs read them.
+- Where GDPR does not apply to the visitor, it writes `IABTCF_gdprApplies = 0` and the category sheet runs as usual.
+- Otherwise ConsentIQ's TCF screens replace the sheet. The SDK loads them in a hidden web view from your `apiUrl` and shows them full-screen only when the visitor has to answer: first launch, a changed vendor list or policy version, or the re-prompt period running out. On a decision it writes every `IABTCF_*` key (numbers as `Int`, strings as `String`), removes `IABTCF_PublisherRestrictions{1..11}` keys the decision no longer has, and applies the category choices to `state` and the callbacks. The screens record the consent with ConsentIQ themselves, so the SDK does not submit it again.
+- System back is ignored on a first prompt and closes re-opened screens. If the visitor had tapped the screens, the SDK hides them and waits up to 10 seconds for a choice already on its way before giving up.
+- An open requested while the screens are already running is kept and runs as soon as they finish.
+- `resetConsent()`, and consent the server reports as expired, remove the decision's `IABTCF_*` keys (all but `IABTCF_CmpSdkID`, `IABTCF_CmpSdkVersion` and `IABTCF_gdprApplies`), so the next start asks again. If TCF is turned off for the property, the next start removes every `IABTCF_*` key the SDK wrote. Keys written by another CMP are never touched.
+- Vendor privacy links open in the system browser.
+- If the screens cannot run on the device (no WebView, or a WebView without the web message listener feature), no `IABTCF_*` key is written, `onError` fires and the category sheet takes over for the session.
+- A load failure or timeout fires `onError` and shows the category sheet; the next `showSheet()` tries the TCF screens again. A choice made on the category sheet meanwhile removes the old decision's `IABTCF_*` keys.
+
+Give your settings screen a "Privacy choices" entry that calls `ConsentIQ.showSheet()`; it opens whichever of the two applies.
 
 ## Sheet behavior
 

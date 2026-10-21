@@ -14,6 +14,7 @@ public data class ConsentIQConfig(
     val onReject: ((RejectInfo) -> Unit)? = null,
     val onSave: ((SaveInfo) -> Unit)? = null,
     val onClose: (() -> Unit)? = null,
+    val onError: ((ErrorInfo) -> Unit)? = null,
 )
 
 public data class ConsentIQState(
@@ -24,6 +25,7 @@ public data class ConsentIQState(
     val isSheetVisible: Boolean = false,
     val language: String = "en",
     val regulation: String? = null,
+    val isTcfActive: Boolean = false,
 ) {
     public fun hasConsent(category: String): Boolean = consent[category] == true
 

@@ -21,6 +21,7 @@ public object ConsentIQ {
     private var engine: ConsentIQEngine? = null
     private var activeConfig: ConsentIQConfig? = null
     private var initJob: Job? = null
+    private val tcfJobs = mutableListOf<Job>()
 
     @Volatile
     private var logger: ConsentIQLogger = AndroidLogger(debug = false)
@@ -35,13 +36,17 @@ public object ConsentIQ {
     public val subjectId: String?
         get() = engine?.subjectId?.takeIf { it.isNotEmpty() }
 
+    public val isTcfActive: Boolean
+        get() = state.value.isTcfActive
+
     @Synchronized
     public fun init(
         context: Context,
         config: ConsentIQConfig,
     ) {
         if (engine != null && activeConfig == config) return
-        trackActivities(context.applicationContext)
+        val app = context.applicationContext ?: context
+        trackActivities(app)
         val log = AndroidLogger(config.debug)
         val api = ConsentIQApiClient(config.propertyKey, config.apiUrl, logger = log)
         initWith(
@@ -50,6 +55,8 @@ public object ConsentIQ {
             api = api,
             logger = log,
             captcha = captchaProviderFor(api.baseUrl),
+            tcfHost = WebViewTcfHost(app, activities),
+            tcfKeys = TcfKeyStore(app),
         )
     }
 
@@ -60,11 +67,15 @@ public object ConsentIQ {
         api: ConsentIQApiClient,
         logger: ConsentIQLogger,
         captcha: CaptchaTokenProvider = CaptchaTokenProvider.UNAVAILABLE,
+        tcfHost: TcfHost = TcfHost.UNAVAILABLE,
+        tcfKeys: TcfKeyWriter = TcfKeyWriter.NONE,
     ): Job {
         val running = initJob
         if (engine != null && activeConfig == config && running != null) return running
         running?.cancel()
-        val next = ConsentIQEngine(config, store, api, logger, mutableState, captcha)
+        tcfJobs.forEach { it.cancel() }
+        tcfJobs.clear()
+        val next = ConsentIQEngine(config, store, api, logger, mutableState, captcha, tcfHost, tcfKeys)
         this.logger = logger
         activeConfig = config
         engine = next
@@ -124,7 +135,21 @@ public object ConsentIQ {
     public fun updateMarketingConsentAsync(updates: Map<String, Boolean>): Job = scope.launch { updateMarketingConsent(updates) }
 
     public fun showSheet() {
-        engine()?.showSheet()
+        val current = engine() ?: return
+        if (current.canOpenTcf) launchTcf(current) else current.showSheet()
+    }
+
+    public fun showTcfPreferences(): Boolean {
+        val current = engine() ?: return false
+        if (!current.canOpenTcf) return false
+        launchTcf(current)
+        return true
+    }
+
+    @Synchronized
+    private fun launchTcf(current: ConsentIQEngine) {
+        tcfJobs.removeAll { !it.isActive }
+        tcfJobs += scope.launch { current.showTcf() }
     }
 
     public fun hideSheet() {

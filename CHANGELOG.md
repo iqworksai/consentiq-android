@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- IAB TCF in-app support. When the property has TCF on, the SDK writes the `IABTCF_*` keys to the app's default `SharedPreferences` and shows ConsentIQ's hosted TCF screens full-screen in a web view, in place of the category sheet, for visitors where GDPR applies. Where it does not apply, the SDK writes `IABTCF_gdprApplies = 0` and keeps the sheet.
+- `ConsentIQ.showSheet()` re-opens the TCF screens when TCF is active. `ConsentIQ.showTcfPreferences()` does the same and returns `false` when TCF is not active.
+- New `ConsentIQState.isTcfActive` and `ConsentIQ.isTcfActive`.
+- New `onError(ErrorInfo)` callback on `ConsentIQConfig`. If the TCF screens cannot run, it fires and the SDK falls back to the category sheet; after a transient failure the next open tries the TCF screens again.
+- `PropertyConfig` has a new optional `tcf` field (`TcfSettings`).
+- `resetConsent()`, and consent the server reports as expired, also clear the stored TCF decision and remove its `IABTCF_*` keys, keeping `IABTCF_CmpSdkID`, `IABTCF_CmpSdkVersion` and `IABTCF_gdprApplies`. Keys are only removed while `IABTCF_CmpSdkID` is still the one this SDK wrote.
+- If TCF is later turned off for the property, the next start removes every `IABTCF_*` key this SDK wrote, again only while `IABTCF_CmpSdkID` is still its own.
+
 ## 1.1.0
 
 - Properties with "Require CAPTCHA" on now accept consent from the SDK. Before each submit, the SDK runs Cloudflare Turnstile invisibly in a hidden web view and sends the token with the consent. If the check fails or needs user interaction, nothing is sent, the local state is kept, and the SDK logs `[ConsentIQ] Captcha check failed; consent not submitted`.

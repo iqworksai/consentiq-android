@@ -10,6 +10,7 @@ internal class ForegroundActivityTracker : Application.ActivityLifecycleCallback
     @Volatile
     private var resumed: WeakReference<Activity>? = null
     private val destroyListeners = CopyOnWriteArrayList<(Activity) -> Unit>()
+    private val resumeListeners = CopyOnWriteArrayList<(Activity) -> Unit>()
 
     val current: Activity?
         get() = resumed?.get()?.takeUnless { it.isFinishing || it.isDestroyed }
@@ -18,8 +19,21 @@ internal class ForegroundActivityTracker : Application.ActivityLifecycleCallback
         destroyListeners += listener
     }
 
+    fun removeDestroyListener(listener: (Activity) -> Unit) {
+        destroyListeners -= listener
+    }
+
+    fun addResumeListener(listener: (Activity) -> Unit) {
+        resumeListeners += listener
+    }
+
+    fun removeResumeListener(listener: (Activity) -> Unit) {
+        resumeListeners -= listener
+    }
+
     override fun onActivityResumed(activity: Activity) {
         resumed = WeakReference(activity)
+        for (listener in resumeListeners) listener(activity)
     }
 
     override fun onActivityPaused(activity: Activity) {

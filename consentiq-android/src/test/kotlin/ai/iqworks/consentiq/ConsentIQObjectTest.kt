@@ -115,6 +115,52 @@ class ConsentIQObjectTest {
     }
 
     @Test
+    fun showSheetAndShowTcfPreferencesReopenTheTcfPageWhenTcfIsActive() =
+        runTest(dispatcher) {
+            http.on("GET", "/api/public/config/${Fixtures.PROPERTY_KEY}", body = Fixtures.configJson(tcf = Fixtures.tcfJson()))
+            val host = FakeTcfHost(onStart = { it.send(pageEvent("current")) })
+            store.saveTcf("""{"tcString":"${Fixtures.TCF_STRING}","vendorIds":[1],"restrictionsKey":"[]"}""")
+            ConsentIQ.initWith(
+                config.copy(language = "de"),
+                store,
+                api(),
+                logger,
+                tcfHost = host,
+                tcfKeys = TcfKeyStore(FakeSharedPreferences()),
+            )
+            advanceUntilIdle()
+
+            assertTrue(ConsentIQ.isTcfActive)
+            assertFalse(ConsentIQ.state.value.isSheetVisible)
+
+            host.onStart = { it.send(pageEvent("show")) }
+            ConsentIQ.showSheet()
+            advanceUntilIdle()
+            assertEquals(listOf(false, true), host.opened.map { it.second })
+            assertFalse(ConsentIQ.state.value.isSheetVisible)
+
+            assertTrue(ConsentIQ.showTcfPreferences())
+            advanceUntilIdle()
+            assertEquals(2, host.opened.size)
+
+            host.onStart = { it.send(pageEvent("closed")) }
+            host.pages.last().send(pageEvent("closed"))
+            advanceUntilIdle()
+            assertEquals(listOf(false, true, true), host.opened.map { it.second })
+            assertTrue(host.pages.all { it.released == 1 })
+        }
+
+    @Test
+    fun showTcfPreferencesIsFalseWithoutTcf() =
+        runTest(dispatcher) {
+            ConsentIQ.initWith(config.copy(language = "fr"), store, api(), logger)
+            advanceUntilIdle()
+
+            assertFalse(ConsentIQ.isTcfActive)
+            assertFalse(ConsentIQ.showTcfPreferences())
+        }
+
+    @Test
     fun aDifferentConfigReinitialises() =
         runTest(dispatcher) {
             ConsentIQ.initWith(config, store, api(), logger)
