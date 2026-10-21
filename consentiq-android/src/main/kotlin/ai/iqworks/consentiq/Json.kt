@@ -57,6 +57,8 @@ internal fun parsePropertyConfig(json: JSONObject): PropertyConfig {
                 cookieIconUrl = banner.stringOrNull("cookieIconUrl"),
                 overlay = banner.optBoolean("overlay", false),
                 noticeUrl = banner.stringOrNull("noticeUrl"),
+                bannerBgColor = banner.stringOrNull("bannerBgColor"),
+                bannerTextColor = banner.stringOrNull("bannerTextColor"),
             ),
         categories =
             json.arrayOrEmpty("categories").objects().map {

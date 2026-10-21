@@ -92,7 +92,23 @@ class ConsentIQApiClientTest {
 
             assertNull(config.banner.noticeUrl)
             assertNull(config.banner.primaryColor)
+            assertNull(config.banner.bannerBgColor)
+            assertNull(config.banner.bannerTextColor)
             assertNull(config.resolvedRegulation)
+        }
+
+    @Test
+    fun bannerColorsAreParsedTolerantly() =
+        runTest {
+            route(
+                "/api/public/config/${Fixtures.PROPERTY_KEY}",
+                body = Fixtures.configJson(bannerColors = """"bannerBgColor": "#111827", "bannerTextColor": null,"""),
+            )
+
+            val banner = client().getConfig().banner
+
+            assertEquals("#111827", banner.bannerBgColor)
+            assertNull(banner.bannerTextColor)
         }
 
     @Test

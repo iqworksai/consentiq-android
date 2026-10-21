@@ -1,5 +1,6 @@
 package ai.iqworks.consentiq.compose
 
+import ai.iqworks.consentiq.BannerConfig
 import ai.iqworks.consentiq.BannerLabels
 import ai.iqworks.consentiq.CategoryInfo
 import ai.iqworks.consentiq.ConsentIQ
@@ -21,6 +22,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
@@ -50,6 +52,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.launch
 import java.net.URLEncoder
+import kotlin.math.roundToInt
 
 public const val DEFAULT_PRIMARY_COLOR: String = "#f97316"
 
@@ -68,22 +71,67 @@ public fun ConsentSheet(consentIQ: ConsentIQ = ConsentIQ) {
         scope.launch { sheetState.hide() }.invokeOnCompletion { action() }
     }
 
-    ModalBottomSheet(
-        onDismissRequest = { consentIQ.dismissSheet() },
-        sheetState = sheetState,
-    ) {
-        CompositionLocalProvider(LocalLayoutDirection provides direction) {
-            SheetContent(
-                config = config,
-                language = state.language,
-                consent = state.consent,
-                onAcceptAll = { closeThen { consentIQ.acceptAllAsync() } },
-                onReject = { closeThen { consentIQ.rejectAllAsync() } },
-                onSave = { selection -> closeThen { consentIQ.savePreferencesAsync(selection) } },
-            )
+    val palette = remember(config.banner) { sheetPalette(config.banner) }
+    MaterialTheme(colorScheme = palette?.applyTo(MaterialTheme.colorScheme) ?: MaterialTheme.colorScheme) {
+        ModalBottomSheet(
+            onDismissRequest = { consentIQ.dismissSheet() },
+            sheetState = sheetState,
+        ) {
+            CompositionLocalProvider(LocalLayoutDirection provides direction) {
+                SheetContent(
+                    config = config,
+                    language = state.language,
+                    consent = state.consent,
+                    onAcceptAll = { closeThen { consentIQ.acceptAllAsync() } },
+                    onReject = { closeThen { consentIQ.rejectAllAsync() } },
+                    onSave = { selection -> closeThen { consentIQ.savePreferencesAsync(selection) } },
+                )
+            }
         }
     }
 }
+
+// The banner colors the dashboard previews; older servers send none, and the app's own theme applies.
+internal data class SheetPalette(
+    val container: Color,
+    val text: Color,
+    val secondary: Color,
+    val outline: Color,
+    val isDark: Boolean,
+) {
+    fun applyTo(scheme: ColorScheme): ColorScheme =
+        scheme.copy(
+            surface = container,
+            surfaceContainerLow = container,
+            onSurface = text,
+            onSurfaceVariant = secondary,
+            outline = outline,
+            outlineVariant = outline,
+            surfaceContainerHighest = outline,
+        )
+}
+
+internal fun sheetPalette(banner: BannerConfig): SheetPalette? {
+    val container = parseHexColor(banner.bannerBgColor) ?: return null
+    val dark = !isLightBackground(container)
+    val text = parseHexColor(banner.bannerTextColor) ?: if (dark) DARK_BANNER_TEXT else LIGHT_BANNER_TEXT
+    return if (dark) {
+        SheetPalette(container, text, secondary = Color(0xFF9CA3AF), outline = Color(0xFF374151), isDark = true)
+    } else {
+        SheetPalette(container, text, secondary = Color(0xFF4B5563), outline = Color(0xFFE5E7EB), isDark = false)
+    }
+}
+
+// The repo-wide YIQ rule, so the sheet agrees with the dashboard's own light/dark call.
+internal fun isLightBackground(color: Color): Boolean {
+    fun channel(value: Float) = (value * 255).roundToInt()
+    val brightness = (channel(color.red) * 299 + channel(color.green) * 587 + channel(color.blue) * 114) / 1000
+    return brightness >= 150
+}
+
+private val DARK_BANNER_TEXT = Color(0xFFF9FAFB)
+private val LIGHT_BANNER_TEXT = Color(0xFF111827)
+private val HEX_COLOR = Regex("^#?([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
 
 @Composable
 private fun SheetContent(
@@ -257,7 +305,9 @@ internal fun withLangParam(
 }
 
 internal fun parseHexColor(value: String?): Color? {
-    val hex = value?.trim()?.removePrefix("#") ?: return null
+    val trimmed = value?.trim() ?: return null
+    if (!HEX_COLOR.matches(trimmed)) return null
+    val hex = trimmed.removePrefix("#")
     val expanded =
         when (hex.length) {
             3 -> hex.map { "$it$it" }.joinToString("")

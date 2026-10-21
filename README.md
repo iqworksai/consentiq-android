@@ -175,6 +175,7 @@ Give your settings screen a "Privacy choices" entry that calls `ConsentIQ.showSh
 
 - Title, button labels and category copy come from the property configuration in the visitor's language, so wording changes in the dashboard reach the app without an SDK update.
 - The primary button is tinted with the banner's brand color, falling back to `#f97316`.
+- The sheet takes the banner's background and text colors from the dashboard when the server sends them, with secondary text and dividers matched to a light or dark background. Without them, it follows your app's Material theme.
 - Right-to-left languages (Arabic, Urdu, Kashmiri, Sindhi) lay the sheet out right-to-left.
 - The "view notice" link opens the cookie notice in the system browser with the current language appended as `lang`.
 - The back button and a swipe down call `dismissSheet()`.

@@ -273,6 +273,7 @@ object Fixtures {
         defaultLanguage: String = "en",
         noticeUrl: String? = "https://consent.example.test/api/public/privacy/pk_test_android?notice=n1",
         primaryColor: String? = "#123456",
+        bannerColors: String = "",
         resolvedRegulation: String? = "DPDPA",
         tcf: String? = null,
     ): String {
@@ -290,6 +291,7 @@ object Fixtures {
               "banner": {
                 "position": "bottom", "layout": "banner", "theme": "dark", "showLogo": false,
                 $color
+                $bannerColors
                 "cornerStyle": "rounded", "showCookieIcon": false, "overlay": false,
                 "noticeUrl": $notice
               },

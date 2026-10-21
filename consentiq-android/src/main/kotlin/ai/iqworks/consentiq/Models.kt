@@ -60,6 +60,8 @@ public data class BannerConfig(
     val cookieIconUrl: String?,
     val overlay: Boolean,
     val noticeUrl: String?,
+    val bannerBgColor: String? = null,
+    val bannerTextColor: String? = null,
 )
 
 public data class CategoryInfo(
