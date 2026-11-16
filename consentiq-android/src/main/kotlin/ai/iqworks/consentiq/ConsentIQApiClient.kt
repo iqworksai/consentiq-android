@@ -14,6 +14,9 @@ public class ConsentIQApiClient(
 ) {
     public val baseUrl: String = baseUrl.trimEnd('/')
 
+    // Signs each submission so ConsentIQ knows it came from this app; null sends nothing.
+    internal var attestation: AppAttestation? = null
+
     public suspend fun getConfig(): PropertyConfig {
         logger.debug("[ConsentIQ] Fetching config for property $propertyKey")
         return parsePropertyConfig(request("GET", "$baseUrl/api/public/config/$propertyKey"))
@@ -26,7 +29,9 @@ public class ConsentIQApiClient(
 
     public suspend fun submitConsent(submission: ConsentSubmission): SubmitResult {
         logger.debug("[ConsentIQ] Submitting consent via ${submission.consentMethod}")
-        return parseSubmitResult(request("POST", "$baseUrl/api/public/consent", submission.toJson(propertyKey)))
+        val body = submission.toJson(propertyKey).toString()
+        val headers = attestation?.headers(body).orEmpty()
+        return parseSubmitResult(request("POST", "$baseUrl/api/public/consent", body, headers))
     }
 
     public suspend fun verifyConsent(consentId: String): VerifyResult =
@@ -35,11 +40,12 @@ public class ConsentIQApiClient(
     private suspend fun request(
         method: String,
         url: String,
-        body: JSONObject? = null,
+        body: String? = null,
+        headers: Map<String, String> = emptyMap(),
     ): JSONObject {
         val response =
             withContext(ioDispatcher) {
-                http.execute(HttpRequest(method = method, url = url, body = body?.toString()))
+                http.execute(HttpRequest(method = method, url = url, body = body, headers = headers))
             }
         if (response.status !in 200..299) {
             val message = runCatching { JSONObject(response.body).stringOrNull("error") }.getOrNull()

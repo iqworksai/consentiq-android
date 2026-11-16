@@ -34,6 +34,7 @@ kotlin {
 dependencies {
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.androidx.webkit)
+    implementation(libs.play.integrity)
 
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)

@@ -29,6 +29,7 @@ public object ConsentIQ {
     private var appContext: Context? = null
     private var activities: ForegroundActivityTracker? = null
     private val captchaProviders = HashMap<String, CaptchaTokenProvider>()
+    private var integritySource: IntegrityTokenSource? = null
 
     public val isInitialized: Boolean
         get() = engine != null
@@ -48,7 +49,9 @@ public object ConsentIQ {
         val app = context.applicationContext ?: context
         trackActivities(app)
         val log = AndroidLogger(config.debug)
+        integritySource = config.playIntegrityCloudProjectNumber?.let { PlayIntegrityTokenSource(app, it) }
         val api = ConsentIQApiClient(config.propertyKey, config.apiUrl, logger = log)
+        api.attestation = appAttestation(log)
         initWith(
             config = config,
             store = ConsentStore(SharedPreferencesStorage(context)),
@@ -86,6 +89,8 @@ public object ConsentIQ {
         propertyKey: String,
         baseUrl: String,
     ): PropertyConfig? = engine?.loadedConfigFor(propertyKey, baseUrl)
+
+    internal fun appAttestation(logger: ConsentIQLogger): AppAttestation = AppAttestation(integritySource, logger)
 
     @Synchronized
     internal fun captchaProviderFor(

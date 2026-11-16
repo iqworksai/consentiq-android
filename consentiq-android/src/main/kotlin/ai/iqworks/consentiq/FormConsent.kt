@@ -26,7 +26,12 @@ public class FormConsent internal constructor(
     private val sharedConfig: (propertyKey: String, baseUrl: String) -> PropertyConfig?,
     private val captcha: () -> CaptchaTokenProvider,
     private val identityToken: String? = null,
+    attestation: AppAttestation? = null,
 ) {
+    init {
+        if (attestation != null) api.attestation = attestation
+    }
+
     public constructor(
         propertyKey: String,
         apiUrl: String = DEFAULT_API_URL,
@@ -50,6 +55,7 @@ public class FormConsent internal constructor(
         sharedConfig = ConsentIQ::loadedConfigFor,
         captcha = { ConsentIQ.captchaProviderFor(api.baseUrl, propertyKey) },
         identityToken = identityToken,
+        attestation = ConsentIQ.appAttestation(logger),
     )
 
     private val configMutex = Mutex()
