@@ -25,6 +25,7 @@ public class FormConsent internal constructor(
     private val logger: ConsentIQLogger,
     private val sharedConfig: (propertyKey: String, baseUrl: String) -> PropertyConfig?,
     private val captcha: () -> CaptchaTokenProvider,
+    private val identityToken: String? = null,
 ) {
     public constructor(
         propertyKey: String,
@@ -34,6 +35,7 @@ public class FormConsent internal constructor(
         channels: List<String> = DEFAULT_CHANNELS,
         onConsentSubmitted: ((FormConsentResult) -> Unit)? = null,
         onConsentChange: ((Map<String, Boolean>) -> Unit)? = null,
+        identityToken: String? = null,
         api: ConsentIQApiClient = ConsentIQApiClient(propertyKey, apiUrl),
         logger: ConsentIQLogger = ConsentIQLogger.NONE,
     ) : this(
@@ -46,7 +48,8 @@ public class FormConsent internal constructor(
         api = api,
         logger = logger,
         sharedConfig = ConsentIQ::loadedConfigFor,
-        captcha = { ConsentIQ.captchaProviderFor(api.baseUrl) },
+        captcha = { ConsentIQ.captchaProviderFor(api.baseUrl, propertyKey) },
+        identityToken = identityToken,
     )
 
     private val configMutex = Mutex()
@@ -84,15 +87,18 @@ public class FormConsent internal constructor(
                     null
                 }
             val result =
-                api.submitConsent(
-                    ConsentSubmission(
-                        subjectId = subjectId,
-                        subjectType = subjectType,
-                        marketingConsents = snapshot,
-                        consentMethod = "form",
-                        captchaToken = captchaToken,
-                    ),
-                )
+                submitAnsweringChallenge(captchaToken, captcha, logger) { token ->
+                    api.submitConsent(
+                        ConsentSubmission(
+                            subjectId = subjectId,
+                            subjectType = subjectType,
+                            marketingConsents = snapshot,
+                            consentMethod = "form",
+                            captchaToken = token,
+                            identityToken = identityToken,
+                        ),
+                    )
+                } ?: return null
             val outcome = FormConsentResult(result.consentId, result.proofHash, snapshot)
             onConsentSubmitted?.invoke(outcome)
             return outcome

@@ -3,6 +3,7 @@ package ai.iqworks.consentiq
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.app.Application
+import android.app.Dialog
 import android.content.Context
 import android.os.Build
 import android.os.Handler
@@ -16,7 +17,9 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.Button
 import android.widget.FrameLayout
+import android.widget.LinearLayout
 import androidx.webkit.WebMessageCompat
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
@@ -29,13 +32,13 @@ import kotlinx.coroutines.withTimeoutOrNull
 
 internal class WebViewCaptchaProvider(
     private val context: Context,
-    baseUrl: String,
+    private val pageUrl: String,
     private val activities: ForegroundActivityTracker?,
 ) : CaptchaTokenProvider {
-    private val pageUrl = captchaPageUrl(baseUrl)
     private val mutex = Mutex()
     private val mainHandler = Handler(Looper.getMainLooper())
     private var page: Page? = null
+    private var dialog: Dialog? = null
 
     init {
         activities?.addDestroyListener(::detachFrom)
@@ -43,26 +46,82 @@ internal class WebViewCaptchaProvider(
 
     override suspend fun token(): String =
         mutex.withLock {
-            val token = withTimeoutOrNull(TIMEOUT_MS) { withContext(Dispatchers.Main.immediate) { requestToken() } }
-            if (token == null) {
-                withContext(Dispatchers.Main.immediate) { page?.takeUnless { it.ready.isCompleted }?.let { fail(it, "timeout") } }
-                throw CaptchaException("timeout")
+            withContext(Dispatchers.Main.immediate) {
+                try {
+                    requestToken()
+                } finally {
+                    conceal()
+                }
             }
-            token
         }
 
+    // Turnstile signals nothing when it wants a click, so a token this late is taken to need one.
     private suspend fun requestToken(): String {
         val current = currentPage()
         attach(current.view)
-        current.ready.await()
+        if (withTimeoutOrNull(TIMEOUT_MS) { current.ready.await() } == null) {
+            fail(current, "timeout")
+            throw CaptchaException("timeout")
+        }
         val result = CompletableDeferred<String>()
         current.pending = result
+        val reveal = Runnable { reveal(current, result) }
         try {
             current.view.evaluateJavascript(EXECUTE_SCRIPT, null)
-            return result.await()
+            mainHandler.postDelayed(reveal, REVEAL_DELAY_MS)
+            return withTimeoutOrNull(TIMEOUT_MS) { result.await() }
+                ?: if (current.revealed) {
+                    withTimeoutOrNull(INTERACTION_TIMEOUT_MS - TIMEOUT_MS) { result.await() } ?: throw CaptchaException("timeout")
+                } else {
+                    throw CaptchaException("timeout")
+                }
         } finally {
+            mainHandler.removeCallbacks(reveal)
             if (current.pending === result) current.pending = null
         }
+    }
+
+    // Shows the challenge over the app with a Cancel button, for a visitor Cloudflare wants to click.
+    private fun reveal(
+        source: Page,
+        result: CompletableDeferred<String>,
+    ) {
+        if (source.revealed || result.isCompleted || page !== source) return
+        val activity = activities?.current ?: return
+        source.revealed = true
+        val view = source.view as? HiddenWebView ?: return
+        (view.parent as? ViewGroup)?.removeView(view)
+        view.interactive = true
+        val content =
+            LinearLayout(activity).apply {
+                orientation = LinearLayout.VERTICAL
+                addView(view, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(activity, CHALLENGE_HEIGHT_DP)))
+                addView(
+                    Button(activity).apply {
+                        setText(android.R.string.cancel)
+                        setOnClickListener { result.completeExceptionally(CaptchaException("cancelled")) }
+                    },
+                )
+            }
+        dialog =
+            Dialog(activity).apply {
+                setContentView(content)
+                setOnCancelListener { result.completeExceptionally(CaptchaException("cancelled")) }
+                show()
+            }
+    }
+
+    private fun conceal() {
+        val shown = dialog ?: return
+        dialog = null
+        val view = page?.view as? HiddenWebView
+        if (view != null) {
+            (view.parent as? ViewGroup)?.removeView(view)
+            view.interactive = false
+            page?.revealed = false
+        }
+        runCatching { shown.dismiss() }
+        view?.let { attach(it) }
     }
 
     @SuppressLint("SetJavaScriptEnabled", "RequiresFeature")
@@ -110,6 +169,7 @@ internal class WebViewCaptchaProvider(
         if (page !== source) return
         when (message) {
             CaptchaMessage.Ready -> source.ready.complete(Unit)
+            CaptchaMessage.Interactive -> source.pending?.let { reveal(source, it) }
             is CaptchaMessage.Token -> source.pending?.complete(message.token)
             is CaptchaMessage.Error ->
                 if (source.ready.isCompleted) {
@@ -195,30 +255,46 @@ internal class WebViewCaptchaProvider(
         val ready = CompletableDeferred<Unit>()
         var pending: CompletableDeferred<String>? = null
         var discarded = false
+        var revealed = false
     }
 
     @SuppressLint("ViewConstructor")
     private class HiddenWebView(
         context: Context,
     ) : WebView(context) {
+        var interactive = false
+            set(value) {
+                field = value
+                alpha = if (value) 1f else HIDDEN_ALPHA
+                isFocusable = value
+                isFocusableInTouchMode = value
+                descendantFocusability = if (value) FOCUS_AFTER_DESCENDANTS else FOCUS_BLOCK_DESCENDANTS
+                importantForAccessibility =
+                    if (value) IMPORTANT_FOR_ACCESSIBILITY_AUTO else IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
+            }
+
         init {
-            alpha = HIDDEN_ALPHA
-            isFocusable = false
-            isFocusableInTouchMode = false
+            interactive = false
             isClickable = false
             isLongClickable = false
-            descendantFocusability = FOCUS_BLOCK_DESCENDANTS
-            importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
         }
 
-        // The 1x1 view sits on top of the app's content; it must never swallow a tap meant for the app.
-        override fun dispatchTouchEvent(event: MotionEvent): Boolean = false
+        // Hidden, the 1x1 view sits on top of the app's content; it must never swallow a tap meant for the app.
+        override fun dispatchTouchEvent(event: MotionEvent): Boolean = interactive && super.dispatchTouchEvent(event)
     }
 
     private companion object {
         const val TIMEOUT_MS = 15_000L
+        const val REVEAL_DELAY_MS = 3_000L
+        const val INTERACTION_TIMEOUT_MS = 120_000L
+        const val CHALLENGE_HEIGHT_DP = 100
         const val BRIDGE_NAME = "ConsentIQAndroid"
         const val EXECUTE_SCRIPT = "window.consentiqExecute()"
         const val HIDDEN_ALPHA = 0.01f
     }
 }
+
+private fun dp(
+    context: Context,
+    value: Int,
+): Int = (value * context.resources.displayMetrics.density).toInt()

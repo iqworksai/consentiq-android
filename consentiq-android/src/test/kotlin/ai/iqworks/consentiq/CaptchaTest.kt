@@ -9,13 +9,13 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class CaptchaTest {
-    private val page = "https://consent.iqworks.ai/api/public/captcha/mobile"
+    private val page = "https://consent.iqworks.ai/api/public/captcha/mobile?key=pk_test"
 
     @Test
-    fun pageUrlHangsOffTheApiUrl() {
-        assertEquals(page, captchaPageUrl(DEFAULT_API_URL))
-        assertEquals(page, captchaPageUrl("https://consent.iqworks.ai/"))
-        assertEquals("http://10.0.2.2:3000/api/public/captcha/mobile", captchaPageUrl("http://10.0.2.2:3000"))
+    fun pageUrlHangsOffTheApiUrlAndNamesTheProperty() {
+        assertEquals(page, captchaPageUrl(DEFAULT_API_URL, "pk_test"))
+        assertEquals(page, captchaPageUrl("https://consent.iqworks.ai/", "pk_test"))
+        assertEquals("http://10.0.2.2:3000/api/public/captcha/mobile?key=a+b%26c", captchaPageUrl("http://10.0.2.2:3000", "a b&c"))
     }
 
     @Test
@@ -30,7 +30,8 @@ class CaptchaTest {
     @Test
     fun mainFrameMayOnlyLoadTheCaptchaPage() {
         assertTrue(isAllowedCaptchaNavigation(page, isMainFrame = true, pageUrl = page))
-        assertFalse(isAllowedCaptchaNavigation("$page?next=1", isMainFrame = true, pageUrl = page))
+        assertFalse(isAllowedCaptchaNavigation("$page&next=1", isMainFrame = true, pageUrl = page))
+        assertFalse(isAllowedCaptchaNavigation("https://consent.iqworks.ai/api/public/captcha/mobile", isMainFrame = true, pageUrl = page))
         assertFalse(isAllowedCaptchaNavigation("https://consent.iqworks.ai/", isMainFrame = true, pageUrl = page))
         assertFalse(isAllowedCaptchaNavigation("https://challenges.cloudflare.com/x", isMainFrame = true, pageUrl = page))
     }
@@ -49,6 +50,7 @@ class CaptchaTest {
     @Test
     fun bridgeMessagesAreParsed() {
         assertEquals(CaptchaMessage.Ready, parseCaptchaMessage("""{"type":"ready"}"""))
+        assertEquals(CaptchaMessage.Interactive, parseCaptchaMessage("""{"type":"interactive"}"""))
         assertEquals(CaptchaMessage.Token("t-1"), parseCaptchaMessage("""{"type":"token","token":"t-1"}"""))
         assertEquals(CaptchaMessage.Error(null), parseCaptchaMessage("""{"type":"token","token":""}"""))
         assertEquals(CaptchaMessage.Error("300030"), parseCaptchaMessage("""{"type":"error","code":"300030"}"""))
@@ -83,11 +85,58 @@ class CaptchaTest {
         }
 
     @Test
-    fun submissionCarriesTheTokenOnlyWhenPresent() {
+    fun submissionCarriesTheTokensOnlyWhenPresent() {
         val without = ConsentSubmission(subjectId = "s").toJson(Fixtures.PROPERTY_KEY)
-        val withToken = ConsentSubmission(subjectId = "s", captchaToken = "tok").toJson(Fixtures.PROPERTY_KEY)
+        val withTokens = ConsentSubmission(subjectId = "s", captchaToken = "tok", identityToken = "v2.1.sig").toJson(Fixtures.PROPERTY_KEY)
 
         assertFalse(without.has("captchaToken"))
-        assertEquals("tok", withToken.getString("captchaToken"))
+        assertFalse(without.has("identityToken"))
+        assertEquals("tok", withTokens.getString("captchaToken"))
+        assertEquals("v2.1.sig", withTokens.getString("identityToken"))
     }
+
+    @Test
+    fun onlyACaptchaRequiredAnswerIsAChallenge() {
+        assertTrue(ConsentIQException("captcha_required", 428).isCaptchaRequired)
+        assertFalse(ConsentIQException("Precondition Required", 428).isCaptchaRequired)
+        assertFalse(ConsentIQException("captcha_required", 400).isCaptchaRequired)
+    }
+
+    @Test
+    fun aChallengeIsAnsweredOnceThenGivenUpOn() =
+        runTest {
+            val logger = RecordingLogger()
+            val sent = mutableListOf<String?>()
+            val ok = SubmitResult(true, "c-1", "h")
+            val challenge = ConsentIQException("captcha_required", 428)
+
+            val answered =
+                submitAnsweringChallenge(null, { FakeCaptchaProvider { "tok" } }, logger) { token ->
+                    sent += token
+                    if (sent.size == 1) throw challenge else ok
+                }
+            assertEquals(ok, answered)
+            assertEquals(listOf(null, "tok"), sent)
+
+            sent.clear()
+            val error =
+                runCatching {
+                    submitAnsweringChallenge(null, { FakeCaptchaProvider { "tok" } }, logger) { token ->
+                        sent += token
+                        throw challenge
+                    }
+                }.exceptionOrNull()
+            assertEquals(challenge, error)
+            assertEquals(listOf(null, "tok"), sent)
+
+            sent.clear()
+            val cancelled =
+                submitAnsweringChallenge(null, { FakeCaptchaProvider { throw CaptchaException("cancelled") } }, logger) { token ->
+                    sent += token
+                    throw challenge
+                }
+            assertNull(cancelled)
+            assertEquals(listOf<String?>(null), sent)
+            assertEquals(listOf("[ConsentIQ] Captcha check failed; consent not submitted"), logger.warnings)
+        }
 }

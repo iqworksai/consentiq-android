@@ -5,6 +5,7 @@ import org.json.JSONException
 import org.json.JSONObject
 import java.net.URI
 import java.net.URISyntaxException
+import java.net.URLEncoder
 
 internal interface CaptchaTokenProvider {
     suspend fun token(): String
@@ -36,7 +37,33 @@ internal suspend fun CaptchaTokenProvider.tokenOrWarn(logger: ConsentIQLogger): 
         null
     }
 
-internal fun captchaPageUrl(baseUrl: String): String = "${baseUrl.trimEnd('/')}/api/public/captcha/mobile"
+// The key binds each token to the property, so it cannot be spent on another one.
+internal fun captchaPageUrl(
+    baseUrl: String,
+    propertyKey: String,
+): String = "${baseUrl.trimEnd('/')}/api/public/captcha/mobile?key=${URLEncoder.encode(propertyKey, "UTF-8")}"
+
+// ConsentIQ asks for a captcha when a submission looks automated, whatever the property's setting.
+internal val ConsentIQException.isCaptchaRequired: Boolean
+    get() = status == 428 && message == "captcha_required"
+
+/**
+ * Sends a submission and, when the server answers 428 captcha_required, solves one challenge and
+ * sends it once more. Returns null, having logged the captcha warning, when that challenge fails.
+ */
+internal suspend fun submitAnsweringChallenge(
+    firstToken: String?,
+    captcha: () -> CaptchaTokenProvider,
+    logger: ConsentIQLogger,
+    send: suspend (captchaToken: String?) -> SubmitResult,
+): SubmitResult? =
+    try {
+        send(firstToken)
+    } catch (e: ConsentIQException) {
+        if (!e.isCaptchaRequired) throw e
+        val token = captcha().tokenOrWarn(logger) ?: return null
+        send(token)
+    }
 
 internal fun originOf(url: String): String? {
     val uri =
@@ -75,6 +102,8 @@ private val TURNSTILE_BLANK_FRAMES = setOf("about:blank", "about:srcdoc")
 internal sealed interface CaptchaMessage {
     data object Ready : CaptchaMessage
 
+    data object Interactive : CaptchaMessage
+
     data class Token(
         val token: String,
     ) : CaptchaMessage
@@ -94,6 +123,7 @@ internal fun parseCaptchaMessage(data: String?): CaptchaMessage? {
         }
     return when (json.stringOrNull("type")) {
         "ready" -> CaptchaMessage.Ready
+        "interactive" -> CaptchaMessage.Interactive
         "token" -> json.stringOrNull("token")?.takeIf { it.isNotBlank() }?.let { CaptchaMessage.Token(it) } ?: CaptchaMessage.Error(null)
         "error" -> CaptchaMessage.Error(json.stringOrNull("code"))
         else -> null

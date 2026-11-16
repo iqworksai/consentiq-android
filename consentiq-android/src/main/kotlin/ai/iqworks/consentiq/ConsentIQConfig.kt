@@ -8,6 +8,8 @@ public data class ConsentIQConfig(
     val autoShow: Boolean = true,
     val language: String? = null,
     val debug: Boolean = false,
+    // Your server's signature for this person, sent with every submission unread.
+    val identityToken: String? = null,
     val onConsentChange: ((consent: Map<String, Boolean>, marketing: Map<String, Boolean>) -> Unit)? = null,
     val onOpen: (() -> Unit)? = null,
     val onAccept: ((AcceptInfo) -> Unit)? = null,

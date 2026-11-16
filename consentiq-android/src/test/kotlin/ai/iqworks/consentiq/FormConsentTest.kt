@@ -32,6 +32,7 @@ class FormConsentTest {
         channels: List<String> = FormConsent.DEFAULT_CHANNELS,
         sharedConfig: PropertyConfig? = null,
         captcha: CaptchaTokenProvider = CaptchaTokenProvider.UNAVAILABLE,
+        identityToken: String? = null,
     ) = FormConsent(
         propertyKey = Fixtures.PROPERTY_KEY,
         subjectId = subjectId,
@@ -43,6 +44,7 @@ class FormConsentTest {
         logger = logger,
         sharedConfig = { key, baseUrl -> sharedConfig?.takeIf { key == Fixtures.PROPERTY_KEY && baseUrl == "http://stub" } },
         captcha = { captcha },
+        identityToken = identityToken,
     )
 
     private fun captchaConfig(): PropertyConfig = parsePropertyConfig(JSONObject(Fixtures.configJson(requireCaptcha = true)))
@@ -159,6 +161,37 @@ class FormConsentTest {
             assertTrue(submitted.isEmpty())
             assertTrue(form.consents.value.getValue("email"))
             assertFalse(form.isSubmitting.value)
+            assertEquals(listOf("[ConsentIQ] Captcha check failed; consent not submitted"), logger.warnings)
+            assertTrue(logger.errors.isEmpty())
+        }
+
+    @Test
+    fun theFormAnswersAChallengeOnceAndSendsItsIdentityToken() =
+        runTest(dispatcher) {
+            var posts = 0
+            http.on("POST", "/api/public/consent") {
+                posts++
+                if (posts == 1) HttpResponse(428, """{"error":"captcha_required"}""") else HttpResponse(200, Fixtures.SUBMIT_OK)
+            }
+            val form = form(captcha = FakeCaptchaProvider { "tok" }, identityToken = "v2.1.sig")
+
+            assertNotNull(form.submit())
+
+            val sent = http.posts()
+            assertEquals(2, sent.size)
+            assertEquals("tok", sent[1].getString("captchaToken"))
+            assertEquals(listOf("v2.1.sig", "v2.1.sig"), sent.map { it.getString("identityToken") })
+        }
+
+    @Test
+    fun theFormGivesUpWhenTheChallengeIsCancelled() =
+        runTest(dispatcher) {
+            http.on("POST", "/api/public/consent", status = 428, body = """{"error":"captcha_required"}""")
+            val form = form(captcha = FakeCaptchaProvider { throw CaptchaException("cancelled") })
+
+            assertNull(form.submit())
+
+            assertEquals(1, http.posts().size)
             assertEquals(listOf("[ConsentIQ] Captcha check failed; consent not submitted"), logger.warnings)
             assertTrue(logger.errors.isEmpty())
         }

@@ -172,6 +172,7 @@ public data class ConsentSubmission(
     val consentMethod: String = "sdk",
     val consentVersion: String? = null,
     val captchaToken: String? = null,
+    val identityToken: String? = null,
 )
 
 public data class SubmitResult(

@@ -134,6 +134,7 @@ Every write updates the state first, then posts the consent to ConsentIQ, then p
 | `autoShow` | `true` | Show the sheet automatically when no consent is found |
 | `language` | `null` | Force a language; otherwise the property's default language, then `en` |
 | `debug` | `false` | Log request details to Logcat under the `ConsentIQ` tag. Turn it on in debug builds only |
+| `identityToken` | `null` | Your server's signature for this person, sent with every submit. ConsentIQ verifies it and marks the record verified by your organization. Sign on your server, never in the app. `FormConsent` takes the same parameter |
 
 With `autoShow = false` and TCF active, the TCF screens also wait for `showSheet()`. `IABTCF_gdprApplies` is still written at start-up; whether a stored TC string is out of date is checked when the screens next open.
 
@@ -182,7 +183,7 @@ Give your settings screen a "Privacy choices" entry that calls `ConsentIQ.showSh
 
 ## Limitations
 
-- Captcha. When "Require CAPTCHA" is on for the property, the SDK runs Cloudflare Turnstile invisibly in a hidden web view, loaded from `consent.iqworks.ai` (your `apiUrl`) and `challenges.cloudflare.com`, before each submit. If the check fails or Turnstile asks for user interaction, nothing is sent, the local state is kept, and the SDK logs `[ConsentIQ] Captcha check failed; consent not submitted`. `FormConsent` uses the web view that `ConsentIQ.init` sets up, so call `init` first. List Cloudflare Turnstile in your app's privacy disclosures.
+- Captcha. When "Require CAPTCHA" is on for the property, the SDK runs Cloudflare Turnstile in a web view, loaded from `consent.iqworks.ai` (your `apiUrl`) and `challenges.cloudflare.com`, before each submit. ConsentIQ may also ask for a captcha on any property when a submit looks automated; the SDK then solves one and submits once more. The check runs invisibly; if it has not finished within a few seconds it is shown in a dialog with a Cancel button, so a visitor Cloudflare wants to click can do so. If the check fails, times out or is cancelled, nothing more is sent, the local state is kept, and the SDK logs `[ConsentIQ] Captcha check failed; consent not submitted`. `FormConsent` uses the web view that `ConsentIQ.init` sets up, so call `init` first. List Cloudflare Turnstile in your app's privacy disclosures.
 - Regulation detection uses the server's view of the device's IP address. There is no client-side override.
 - The SDK does not block third-party SDKs on its own. Read `hasConsent` before starting them.
 

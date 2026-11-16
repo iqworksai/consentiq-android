@@ -288,6 +288,61 @@ class ConsentIQEngineTest {
         }
 
     @Test
+    fun aChallengeIsAnsweredOnceAndTheConsentRecorded() =
+        runTest(dispatcher) {
+            http.onConsentLookup(Fixtures.NO_CONSENT)
+            var posts = 0
+            http.on("POST", "/api/public/consent") {
+                posts++
+                if (posts == 1) HttpResponse(428, """{"error":"captcha_required"}""") else HttpResponse(200, Fixtures.SUBMIT_OK)
+            }
+            val captcha = FakeCaptchaProvider { "tok" }
+            val engine = engine(captcha = captcha)
+            engine.initialize()
+
+            engine.acceptAll()
+
+            val sent = http.posts()
+            assertEquals(2, sent.size)
+            assertFalse(sent[0].has("captchaToken"))
+            assertEquals("tok", sent[1].getString("captchaToken"))
+            assertEquals(1, captcha.calls)
+            assertEquals(1, changes.size)
+            assertNotNull(store.loadConsent())
+        }
+
+    @Test
+    fun aCancelledChallengeSendsNothingMoreAndKeepsLocalState() =
+        runTest(dispatcher) {
+            http.onConsentLookup(Fixtures.NO_CONSENT)
+            http.on("POST", "/api/public/consent", status = 428, body = """{"error":"captcha_required"}""")
+            val engine = engine(captcha = FakeCaptchaProvider { throw CaptchaException("cancelled") })
+            engine.initialize()
+
+            engine.acceptAll()
+
+            assertEquals(1, http.posts().size)
+            assertTrue(state.value.hasConsent("analytics"))
+            assertTrue(changes.isEmpty())
+            assertNull(store.loadConsent())
+            assertEquals(listOf("[ConsentIQ] Captcha check failed; consent not submitted"), logger.warnings)
+        }
+
+    @Test
+    fun theIdentityTokenGoesWithEverySubmit() =
+        runTest(dispatcher) {
+            http.onConsentLookup(Fixtures.NO_CONSENT)
+            http.on("POST", "/api/public/consent", body = Fixtures.SUBMIT_OK)
+            val engine = engine(config = config().copy(identityToken = "v2.1.sig"))
+            engine.initialize()
+
+            engine.acceptAll()
+            engine.rejectAll()
+
+            assertEquals(listOf("v2.1.sig", "v2.1.sig"), http.posts().map { it.getString("identityToken") })
+        }
+
+    @Test
     fun captchaIsSkippedWhenNotRequired() =
         runTest(dispatcher) {
             http.onConsentLookup(Fixtures.NO_CONSENT)

@@ -111,7 +111,7 @@ class ConsentIQObjectTest {
 
     @Test
     fun captchaIsUnavailableBeforeInitGivesAContext() {
-        assertSame(CaptchaTokenProvider.UNAVAILABLE, ConsentIQ.captchaProviderFor("http://stub"))
+        assertSame(CaptchaTokenProvider.UNAVAILABLE, ConsentIQ.captchaProviderFor("http://stub", Fixtures.PROPERTY_KEY))
     }
 
     @Test

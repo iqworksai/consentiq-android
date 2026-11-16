@@ -340,15 +340,18 @@ internal class ConsentIQEngine(
                 null
             }
         try {
-            api.submitConsent(
-                ConsentSubmission(
-                    subjectId = subjectId,
-                    cookieConsents = cookie,
-                    marketingConsents = marketing,
-                    consentMethod = "sdk",
-                    captchaToken = captchaToken,
-                ),
-            )
+            submitAnsweringChallenge(captchaToken, { captcha }, logger) { token ->
+                api.submitConsent(
+                    ConsentSubmission(
+                        subjectId = subjectId,
+                        cookieConsents = cookie,
+                        marketingConsents = marketing,
+                        consentMethod = "sdk",
+                        captchaToken = token,
+                        identityToken = config.identityToken,
+                    ),
+                )
+            } ?: return
             store.saveConsent(cookie)
             config.onConsentChange?.invoke(cookie, marketing)
         } catch (e: CancellationException) {

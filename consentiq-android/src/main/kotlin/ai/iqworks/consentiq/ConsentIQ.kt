@@ -54,7 +54,7 @@ public object ConsentIQ {
             store = ConsentStore(SharedPreferencesStorage(context)),
             api = api,
             logger = log,
-            captcha = captchaProviderFor(api.baseUrl),
+            captcha = captchaProviderFor(api.baseUrl, config.propertyKey),
             tcfHost = WebViewTcfHost(app, activities),
             tcfKeys = TcfKeyStore(app),
         )
@@ -88,9 +88,13 @@ public object ConsentIQ {
     ): PropertyConfig? = engine?.loadedConfigFor(propertyKey, baseUrl)
 
     @Synchronized
-    internal fun captchaProviderFor(baseUrl: String): CaptchaTokenProvider {
+    internal fun captchaProviderFor(
+        baseUrl: String,
+        propertyKey: String,
+    ): CaptchaTokenProvider {
         val context = appContext ?: return CaptchaTokenProvider.UNAVAILABLE
-        return captchaProviders.getOrPut(baseUrl.trimEnd('/')) { WebViewCaptchaProvider(context, baseUrl, activities) }
+        val pageUrl = captchaPageUrl(baseUrl, propertyKey)
+        return captchaProviders.getOrPut(pageUrl) { WebViewCaptchaProvider(context, pageUrl, activities) }
     }
 
     private fun trackActivities(context: Context) {

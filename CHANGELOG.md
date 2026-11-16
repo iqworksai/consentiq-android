@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- When ConsentIQ answers a submit with `428 captcha_required`, which it can do on any property when a submit looks automated, the SDK solves one Cloudflare Turnstile challenge and submits once more. `FormConsent.submit()` does the same.
+- The captcha page is loaded with the property key, so a token is accepted only for that property.
+- A challenge that has not finished within 3 seconds, or that asks for interaction, is shown in a dialog with the system Cancel button. Once shown it waits up to 2 minutes. Cancelling, a failure or a timeout sends nothing more, keeps the local state and logs the usual captcha warning.
+- `ConsentIQConfig.identityToken`, `FormConsent(identityToken = ...)` and `ConsentSubmission.identityToken` send your server's signature for the person with each submit, unread by the SDK.
 - `ConsentSheet` uses the banner's `bannerBgColor` and `bannerTextColor` from the dashboard when present (new optional `BannerConfig` fields), and keeps the app's Material theme when they are absent. Invalid hex colors, including the brand color, are now ignored.
 - IAB TCF in-app support. When the property has TCF on, the SDK writes the `IABTCF_*` keys to the app's default `SharedPreferences` and shows ConsentIQ's hosted TCF screens full-screen in a web view, in place of the category sheet, for visitors where GDPR applies. Where it does not apply, the SDK writes `IABTCF_gdprApplies = 0` and keeps the sheet.
 - `ConsentIQ.showSheet()` re-opens the TCF screens when TCF is active. `ConsentIQ.showTcfPreferences()` does the same and returns `false` when TCF is not active.
