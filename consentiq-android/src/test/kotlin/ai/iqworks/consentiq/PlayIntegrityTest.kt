@@ -97,3 +97,77 @@ class PlayIntegrityTest {
             )
         }
 }
+
+class PlayIntegrityTimeoutTest {
+    @Test
+    fun aPlayCallThatNeverAnswersFallsBackInsteadOfHanging() =
+        kotlinx.coroutines.test.runTest {
+            val failure =
+                runCatching { withinPlayTimeout(1_000L) { kotlinx.coroutines.awaitCancellation() } }.exceptionOrNull()
+
+            assertTrue(failure is PlayIntegrityUnavailableException)
+        }
+
+    @Test
+    fun aCancelledPlayTaskFailsTheCallInsteadOfHanging() =
+        kotlinx.coroutines.test.runTest {
+            val failure = runCatching { CancelledTask<String>().await() }.exceptionOrNull()
+
+            assertTrue(failure is PlayIntegrityUnavailableException)
+        }
+
+    @Test
+    fun aHungPlayCallLeavesNoHeaderSoTheCaptchaCoversIt() =
+        kotlinx.coroutines.test.runTest {
+            val attestation =
+                AppAttestation(
+                    IntegrityTokenSource { withinPlayTimeout(1_000L) { kotlinx.coroutines.awaitCancellation() } },
+                    RecordingLogger(),
+                )
+
+            assertEquals(emptyMap<String, String>(), attestation.headers("{}"))
+        }
+}
+
+private class CancelledTask<T> : com.google.android.gms.tasks.Task<T>() {
+    override fun isComplete() = true
+
+    override fun isSuccessful() = false
+
+    override fun isCanceled() = true
+
+    override fun getResult(): T = throw IllegalStateException()
+
+    override fun <X : Throwable> getResult(exceptionType: Class<X>): T = throw IllegalStateException()
+
+    override fun getException(): Exception? = null
+
+    override fun addOnSuccessListener(listener: com.google.android.gms.tasks.OnSuccessListener<in T>) = this
+
+    override fun addOnSuccessListener(
+        executor: java.util.concurrent.Executor,
+        listener: com.google.android.gms.tasks.OnSuccessListener<in T>,
+    ) = this
+
+    override fun addOnSuccessListener(
+        activity: android.app.Activity,
+        listener: com.google.android.gms.tasks.OnSuccessListener<in T>,
+    ) = this
+
+    override fun addOnFailureListener(listener: com.google.android.gms.tasks.OnFailureListener) = this
+
+    override fun addOnFailureListener(
+        executor: java.util.concurrent.Executor,
+        listener: com.google.android.gms.tasks.OnFailureListener,
+    ) = this
+
+    override fun addOnFailureListener(
+        activity: android.app.Activity,
+        listener: com.google.android.gms.tasks.OnFailureListener,
+    ) = this
+
+    override fun addOnCanceledListener(listener: com.google.android.gms.tasks.OnCanceledListener): com.google.android.gms.tasks.Task<T> {
+        listener.onCanceled()
+        return this
+    }
+}

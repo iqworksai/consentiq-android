@@ -8,8 +8,18 @@ internal data class PendingDecision(
     val marketingConsents: Map<String, Boolean>,
     val attempts: Int,
     val createdAtMs: Long,
+    // Whose decision it is and where it goes: resent only to the same person, property and server.
+    val subjectId: String,
+    val propertyKey: String,
+    val apiUrl: String,
 ) {
     fun isSpent(nowMs: Long): Boolean = attempts >= MAX_ATTEMPTS || nowMs - createdAtMs > MAX_AGE_MS
+
+    fun belongsTo(
+        subjectId: String,
+        propertyKey: String,
+        apiUrl: String,
+    ): Boolean = this.subjectId == subjectId && this.propertyKey == propertyKey && this.apiUrl == apiUrl
 
     fun toJson(): JSONObject =
         JSONObject()
@@ -17,6 +27,9 @@ internal data class PendingDecision(
             .put("marketingConsents", marketingConsents.toJson())
             .put("attempts", attempts)
             .put("createdAtMs", createdAtMs)
+            .put("subjectId", subjectId)
+            .put("propertyKey", propertyKey)
+            .put("apiUrl", apiUrl)
 
     companion object {
         const val MAX_ATTEMPTS = 3
@@ -28,6 +41,9 @@ internal data class PendingDecision(
                 marketingConsents = booleanMap(json.getJSONObject("marketingConsents")),
                 attempts = json.getInt("attempts"),
                 createdAtMs = json.getLong("createdAtMs"),
+                subjectId = json.getString("subjectId"),
+                propertyKey = json.getString("propertyKey"),
+                apiUrl = json.getString("apiUrl"),
             )
     }
 }

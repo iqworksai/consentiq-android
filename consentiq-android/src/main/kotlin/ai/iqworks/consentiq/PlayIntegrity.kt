@@ -10,6 +10,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeoutOrNull
 import java.security.MessageDigest
 import kotlin.coroutines.resume
 
@@ -71,17 +72,24 @@ internal class AppAttestation(
 internal class PlayIntegrityTokenSource(
     private val context: Context,
     private val cloudProjectNumber: Long,
+    private val timeoutMs: Long = PLAY_INTEGRITY_TIMEOUT_MS,
 ) : IntegrityTokenSource {
     private val mutex = Mutex()
     private var provider: StandardIntegrityTokenProvider? = null
 
     override suspend fun token(requestHash: String): String? {
-        val current = mutex.withLock { provider ?: prepare().also { provider = it } }
+        // A hung or cancelled Play call must not hold the lock, or every later submission waits on it.
+        val current =
+            mutex.withLock {
+                provider ?: withinPlayTimeout(timeoutMs) { prepare() }.also { provider = it }
+            }
         return try {
-            current
-                .request(StandardIntegrityTokenRequest.builder().setRequestHash(requestHash).build())
-                .await()
-                .token()
+            withinPlayTimeout(timeoutMs) {
+                current
+                    .request(StandardIntegrityTokenRequest.builder().setRequestHash(requestHash).build())
+                    .await()
+                    .token()
+            }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -98,8 +106,21 @@ internal class PlayIntegrityTokenSource(
             .await()
 }
 
-private suspend fun <T> Task<T>.await(): T =
+internal const val PLAY_INTEGRITY_TIMEOUT_MS = 10_000L
+
+// A plain exception, not a CancellationException, so the caller falls back to the captcha.
+internal class PlayIntegrityUnavailableException(
+    reason: String,
+) : Exception("Play Integrity $reason")
+
+internal suspend fun <T : Any> withinPlayTimeout(
+    timeoutMs: Long,
+    block: suspend () -> T,
+): T = withTimeoutOrNull(timeoutMs) { block() } ?: throw PlayIntegrityUnavailableException("timeout")
+
+internal suspend fun <T> Task<T>.await(): T =
     suspendCancellableCoroutine { continuation ->
         addOnSuccessListener { continuation.resume(it) }
         addOnFailureListener { continuation.resumeWith(Result.failure(it)) }
+        addOnCanceledListener { continuation.resumeWith(Result.failure(PlayIntegrityUnavailableException("cancelled"))) }
     }

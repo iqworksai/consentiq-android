@@ -17,6 +17,12 @@ internal class ConsentIQEngine(
     private val tcfAnswerTimeoutMs: Long = TCF_ANSWER_TIMEOUT_MS,
     private val now: () -> Long = System::currentTimeMillis,
 ) {
+    // Bumped by resetConsent, so a submit that started before a reset cannot store its 429 after it.
+    private var resetGeneration = 0
+
+    // When the server's own record for this person was made, from the last lookup.
+    private var serverConsentedAtMs: Long? = null
+
     @Volatile
     var subjectId: String = ""
         private set
@@ -68,6 +74,7 @@ internal class ConsentIQEngine(
                             logger.warn("[ConsentIQ] Could not restore consent: ${e.message}")
                         }.getOrNull()
                 val existing = lookup?.consent
+                serverConsentedAtMs = existing?.consentedAt?.let(::parseTimestampMs)
                 when {
                     existing != null -> {
                         val cookie = withNecessary(existing.cookieConsents)
@@ -297,6 +304,7 @@ internal class ConsentIQEngine(
     fun resetConsent() {
         state.update { it.copy(consent = DEFAULT_CONSENT, marketingConsent = emptyMap()) }
         store.clearAll()
+        resetGeneration++
         clearTcfDecision()
         subjectId = resolveSubjectId()
     }
@@ -335,6 +343,10 @@ internal class ConsentIQEngine(
             logger.debug("[ConsentIQ] No subject id; consent kept locally only")
             return
         }
+        // A new decision replaces any earlier one still waiting to be resent.
+        store.clearPending()
+        val submittedFor = subjectId
+        val generation = resetGeneration
         val captchaToken =
             if (loadedConfig.requiresCaptcha()) {
                 captcha.tokenOrWarn(logger) ?: return
@@ -361,7 +373,7 @@ internal class ConsentIQEngine(
             throw e
         } catch (e: ConsentIQException) {
             logger.error("[ConsentIQ] Failed to submit consent: ${e.message}")
-            handleRefusal(e, cookie, marketing)
+            handleRefusal(e, cookie, marketing, submittedFor, generation)
         } catch (e: Exception) {
             logger.error("[ConsentIQ] Failed to submit consent: ${e.message}")
         }
@@ -373,9 +385,17 @@ internal class ConsentIQEngine(
         e: ConsentIQException,
         cookie: Map<String, Boolean>,
         marketing: Map<String, Boolean>,
+        submittedFor: String,
+        generation: Int,
     ) {
         when {
-            e.status == 429 && !loadedConfig.requiresCaptcha() -> store.savePending(PendingDecision(cookie, marketing, 0, now()))
+            e.status == 429 && !loadedConfig.requiresCaptcha() -> {
+                if (generation == resetGeneration) {
+                    store.savePending(
+                        PendingDecision(cookie, marketing, 0, now(), submittedFor, config.propertyKey, config.apiUrl),
+                    )
+                }
+            }
             e.status == 403 -> refused(e)
             e.dropsTheDecision -> store.clearPending()
         }
@@ -390,7 +410,10 @@ internal class ConsentIQEngine(
     // recorded, so the sheet need not ask again.
     private suspend fun resendPending(): Boolean {
         val pending = store.loadPending() ?: return false
-        if (pending.isSpent(now()) || loadedConfig.requiresCaptcha()) {
+        val owned = pending.belongsTo(subjectId, config.propertyKey, config.apiUrl)
+        // A record the server made after this decision is the newer choice, so it wins.
+        val superseded = serverConsentedAtMs?.let { it > pending.createdAtMs } ?: false
+        if (!owned || superseded || pending.isSpent(now()) || loadedConfig.requiresCaptcha()) {
             store.clearPending()
             return false
         }
@@ -426,6 +449,18 @@ internal class ConsentIQEngine(
         config.onConsentChange?.invoke(cookie, pending.marketingConsents)
         return true
     }
+
+    // java.time needs API 26; this library supports 24.
+    private fun parseTimestampMs(value: String): Long? =
+        listOf("yyyy-MM-dd'T'HH:mm:ss.SSSX", "yyyy-MM-dd'T'HH:mm:ssX").firstNotNullOfOrNull { pattern ->
+            runCatching {
+                java.text
+                    .SimpleDateFormat(pattern, java.util.Locale.US)
+                    .apply { isLenient = false }
+                    .parse(value)
+                    ?.time
+            }.getOrNull()
+        }
 
     private fun withNecessary(consent: Map<String, Boolean>): Map<String, Boolean> = LinkedHashMap(consent).apply { put(NECESSARY, true) }
 

@@ -121,7 +121,7 @@ Operations:
 
 `acceptAll`, `rejectAll`, `savePreferences`, `updateConsent` and `updateMarketingConsent` are `suspend` functions. Each has a fire-and-forget twin with an `Async` suffix (`acceptAllAsync()` and so on) that launches on the main thread and returns the `Job`.
 
-Every write updates the state first, then posts the consent to ConsentIQ, then persists the local cache, then calls `onConsentChange`. A failed request is logged and the local state is kept. When ConsentIQ answers `429 Too many requests`, the decision is kept and sent once more on each of the next launches, without a captcha, until it is recorded, three attempts have been made, or seven days have passed. A `400`, `404`, `409` or `422` answer drops it, and a `403` fires `onError` with code `consent_refused` and is not retried.
+Every write updates the state first, then posts the consent to ConsentIQ, then persists the local cache, then calls `onConsentChange`. A failed request is logged and the local state is kept. When ConsentIQ answers `429 Too many requests`, the decision is kept and sent once more on each of the next launches, without a captcha, until it is recorded, three attempts have been made, or seven days have passed. A `400`, `404`, `409` or `422` answer drops it, and a `403` fires `onError` with code `consent_refused` and is not retried. It is resent only for the same subject id, property and API URL, a newer decision replaces it, and a newer record on ConsentIQ for that person wins over it.
 
 `ConsentIQConfig` fields:
 

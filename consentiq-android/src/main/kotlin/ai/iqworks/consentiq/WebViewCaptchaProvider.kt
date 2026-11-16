@@ -55,7 +55,7 @@ internal class WebViewCaptchaProvider(
             }
         }
 
-    // Turnstile signals nothing when it wants a click, so a token this late is taken to need one.
+    // The challenge stays hidden until the page posts `interactive`: only then does Cloudflare need a click.
     private suspend fun requestToken(): String {
         val current = currentPage()
         attach(current.view)
@@ -65,10 +65,8 @@ internal class WebViewCaptchaProvider(
         }
         val result = CompletableDeferred<String>()
         current.pending = result
-        val reveal = Runnable { reveal(current, result) }
         try {
             current.view.evaluateJavascript(EXECUTE_SCRIPT, null)
-            mainHandler.postDelayed(reveal, REVEAL_DELAY_MS)
             return withTimeoutOrNull(TIMEOUT_MS) { result.await() }
                 ?: if (current.revealed) {
                     withTimeoutOrNull(INTERACTION_TIMEOUT_MS - TIMEOUT_MS) { result.await() } ?: throw CaptchaException("timeout")
@@ -76,7 +74,6 @@ internal class WebViewCaptchaProvider(
                     throw CaptchaException("timeout")
                 }
         } finally {
-            mainHandler.removeCallbacks(reveal)
             if (current.pending === result) current.pending = null
         }
     }
@@ -285,7 +282,6 @@ internal class WebViewCaptchaProvider(
 
     private companion object {
         const val TIMEOUT_MS = 15_000L
-        const val REVEAL_DELAY_MS = 3_000L
         const val INTERACTION_TIMEOUT_MS = 120_000L
         const val CHALLENGE_HEIGHT_DP = 100
         const val BRIDGE_NAME = "ConsentIQAndroid"

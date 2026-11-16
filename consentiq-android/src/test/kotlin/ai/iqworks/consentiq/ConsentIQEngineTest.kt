@@ -467,6 +467,110 @@ class ConsentIQEngineTest {
         }
 
     @Test
+    fun aPendingDecisionIsNeverSentForSomeoneElse() =
+        runTest(dispatcher) {
+            refuse(429)
+            engine(launchConfig().copy(subjectId = "user-a")).apply { initialize() }.acceptAll()
+            assertNotNull(store.loadPending())
+
+            accept()
+            engine(launchConfig().copy(subjectId = "user-b")).initialize()
+
+            assertEquals(1, http.posts().size)
+            assertNull(store.loadPending())
+        }
+
+    @Test
+    fun aPendingDecisionIsNeverSentToAnotherServer() =
+        runTest(dispatcher) {
+            refuse(429)
+            engine(launchConfig().copy(subjectId = "user-a")).apply { initialize() }.acceptAll()
+
+            accept()
+            engine(launchConfig().copy(subjectId = "user-a", apiUrl = "http://staging.stub")).initialize()
+
+            assertEquals(1, http.posts().size)
+            assertNull(store.loadPending())
+        }
+
+    @Test
+    fun aNewDecisionReplacesOneStillWaiting() =
+        runTest(dispatcher) {
+            http.onConsentLookup(Fixtures.NO_CONSENT)
+            refuse(429)
+            val engine = engine(launchConfig()).apply { initialize() }
+            engine.acceptAll()
+            assertNotNull(store.loadPending())
+
+            refuse(500)
+            engine.rejectAll()
+
+            assertNull(store.loadPending())
+        }
+
+    @Test
+    fun aNewerRecordOnTheServerWinsOverTheWaitingDecision() =
+        runTest(dispatcher) {
+            http.onConsentLookup(Fixtures.NO_CONSENT)
+            val decidedAt = 1_700_000_000_000L
+            refuse(429)
+            engine(launchConfig(), now = { decidedAt }).apply { initialize() }.acceptAll()
+
+            accept()
+            http.onConsentLookup(Fixtures.savedConsentJson())
+            engine(launchConfig(), now = { decidedAt + 60_000 }).initialize()
+
+            assertEquals("the record dated 2026-09-01 is newer than the decision", 1, http.posts().size)
+            assertNull(store.loadPending())
+        }
+
+    @Test
+    fun anOlderRecordOnTheServerDoesNotStopTheResend() =
+        runTest(dispatcher) {
+            http.onConsentLookup(Fixtures.NO_CONSENT)
+            val decidedAt = 1_800_000_000_000L
+            refuse(429)
+            engine(launchConfig(), now = { decidedAt }).apply { initialize() }.acceptAll()
+
+            accept()
+            http.onConsentLookup(Fixtures.savedConsentJson())
+            engine(launchConfig(), now = { decidedAt + 60_000 }).initialize()
+
+            assertEquals(2, http.posts().size)
+            assertNull(store.loadPending())
+        }
+
+    @Test
+    fun aTooManyRequestsAnswerThatArrivesAfterAResetIsIgnored() =
+        runTest(dispatcher) {
+            http.onConsentLookup(Fixtures.NO_CONSENT)
+            lateinit var engine: ConsentIQEngine
+            http.on("POST", "/api/public/consent") {
+                engine.resetConsent()
+                HttpResponse(429, """{"error":"Too many requests"}""")
+            }
+            engine = engine(launchConfig()).apply { initialize() }
+
+            engine.acceptAll()
+
+            assertNull(store.loadPending())
+        }
+
+    @Test
+    fun aStoredDecisionFromAnOlderVersionIsDiscarded() =
+        runTest(dispatcher) {
+            val storage = InMemoryStorage()
+            val olderFormat = ConsentStore(storage)
+            storage.putString(
+                ConsentStore.PENDING_KEY,
+                """{"cookieConsents":{},"marketingConsents":{},"attempts":0,"createdAtMs":0}""",
+            )
+
+            assertNull(olderFormat.loadPending())
+            assertNull(storage.getString(ConsentStore.PENDING_KEY))
+        }
+
+    @Test
     fun clearAllForgetsAPendingDecision() =
         runTest(dispatcher) {
             http.onConsentLookup(Fixtures.NO_CONSENT)

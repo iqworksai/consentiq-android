@@ -68,7 +68,9 @@ public class ConsentStore(
 
     internal fun loadPending(): PendingDecision? {
         val raw = runCatching { storage.getString(PENDING_KEY) }.getOrNull() ?: return null
-        return runCatching { PendingDecision.fromJson(JSONObject(raw)) }.getOrNull()
+        val pending = runCatching { PendingDecision.fromJson(JSONObject(raw)) }.getOrNull()
+        if (pending == null) clearPending()
+        return pending
     }
 
     internal fun savePending(pending: PendingDecision) {
