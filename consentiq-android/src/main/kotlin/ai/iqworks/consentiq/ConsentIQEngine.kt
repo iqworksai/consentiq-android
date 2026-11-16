@@ -15,6 +15,7 @@ internal class ConsentIQEngine(
     private val tcfKeys: TcfKeyWriter = TcfKeyWriter.NONE,
     private val tcfReadyTimeoutMs: Long = TCF_READY_TIMEOUT_MS,
     private val tcfAnswerTimeoutMs: Long = TCF_ANSWER_TIMEOUT_MS,
+    private val now: () -> Long = System::currentTimeMillis,
 ) {
     @Volatile
     var subjectId: String = ""
@@ -86,6 +87,7 @@ internal class ConsentIQEngine(
                         }
                     }
                 }
+                if (resendPending()) found = true
             }
 
             state.update { it.copy(isLoading = false) }
@@ -352,13 +354,77 @@ internal class ConsentIQEngine(
                     ),
                 )
             } ?: return
+            store.clearPending()
             store.saveConsent(cookie)
             config.onConsentChange?.invoke(cookie, marketing)
         } catch (e: CancellationException) {
             throw e
+        } catch (e: ConsentIQException) {
+            logger.error("[ConsentIQ] Failed to submit consent: ${e.message}")
+            handleRefusal(e, cookie, marketing)
         } catch (e: Exception) {
             logger.error("[ConsentIQ] Failed to submit consent: ${e.message}")
         }
+    }
+
+    // 429 keeps the decision for one quiet retry per launch; a refusal resending cannot change drops
+    // it; 403 (an identity token that did not verify, or one the property requires) goes to the app.
+    private fun handleRefusal(
+        e: ConsentIQException,
+        cookie: Map<String, Boolean>,
+        marketing: Map<String, Boolean>,
+    ) {
+        when {
+            e.status == 429 && !loadedConfig.requiresCaptcha() -> store.savePending(PendingDecision(cookie, marketing, 0, now()))
+            e.status == 403 -> refused(e)
+            e.dropsTheDecision -> store.clearPending()
+        }
+    }
+
+    private fun refused(e: ConsentIQException) {
+        store.clearPending()
+        config.onError?.invoke(ErrorInfo(CONSENT_REFUSED_ERROR, e.message))
+    }
+
+    // Resends a decision kept after a 429, once per launch and never with a captcha. True when it was
+    // recorded, so the sheet need not ask again.
+    private suspend fun resendPending(): Boolean {
+        val pending = store.loadPending() ?: return false
+        if (pending.isSpent(now()) || loadedConfig.requiresCaptcha()) {
+            store.clearPending()
+            return false
+        }
+        store.savePending(pending.copy(attempts = pending.attempts + 1))
+        try {
+            api.submitConsent(
+                ConsentSubmission(
+                    subjectId = subjectId,
+                    cookieConsents = pending.cookieConsents,
+                    marketingConsents = pending.marketingConsents,
+                    consentMethod = "sdk",
+                    identityToken = config.identityToken,
+                ),
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: ConsentIQException) {
+            logger.debug("[ConsentIQ] Pending consent not recorded: ${e.message}")
+            if (e.status == 403) {
+                refused(e)
+            } else if (e.dropsTheDecision) {
+                store.clearPending()
+            }
+            return false
+        } catch (e: Exception) {
+            logger.debug("[ConsentIQ] Pending consent not recorded: ${e.message}")
+            return false
+        }
+        store.clearPending()
+        val cookie = withNecessary(pending.cookieConsents)
+        state.update { it.copy(consent = cookie, marketingConsent = pending.marketingConsents) }
+        store.saveConsent(cookie)
+        config.onConsentChange?.invoke(cookie, pending.marketingConsents)
+        return true
     }
 
     private fun withNecessary(consent: Map<String, Boolean>): Map<String, Boolean> = LinkedHashMap(consent).apply { put(NECESSARY, true) }

@@ -69,6 +69,7 @@ class ConsentIQEngineTest {
     private fun TestScope.engine(
         config: ConsentIQConfig = config(),
         captcha: CaptchaTokenProvider = CaptchaTokenProvider.UNAVAILABLE,
+        now: () -> Long = System::currentTimeMillis,
     ): ConsentIQEngine {
         val api =
             ConsentIQApiClient(
@@ -77,8 +78,19 @@ class ConsentIQEngineTest {
                 http = http,
                 ioDispatcher = dispatcher,
             )
-        return ConsentIQEngine(config, store, api, logger, state, captcha)
+        return ConsentIQEngine(config, store, api, logger, state, captcha, now = now)
     }
+
+    private val errors = mutableListOf<ErrorInfo>()
+
+    private fun refuse(
+        status: Int,
+        error: String = "refused",
+    ) = http.on("POST", "/api/public/consent", status = status, body = """{"error":"$error"}""")
+
+    private fun accept() = http.on("POST", "/api/public/consent", body = Fixtures.SUBMIT_OK)
+
+    private fun launchConfig() = config(autoShow = false).copy(onError = { errors += it })
 
     private fun FakeHttpExecutor.onConsentLookup(body: String) {
         on("GET", "/api/public/consent/${Fixtures.PROPERTY_KEY}/${store.getOrCreateSubjectId()}", body = body)
@@ -340,6 +352,130 @@ class ConsentIQEngineTest {
             engine.rejectAll()
 
             assertEquals(listOf("v2.1.sig", "v2.1.sig"), http.posts().map { it.getString("identityToken") })
+        }
+
+    @Test
+    fun aTooManyRequestsAnswerKeepsTheDecisionAndTheNextLaunchSendsItWithoutACaptcha() =
+        runTest(dispatcher) {
+            http.onConsentLookup(Fixtures.NO_CONSENT)
+            refuse(429, "Too many requests")
+            val captcha = FakeCaptchaProvider { "tok" }
+            engine(launchConfig(), captcha).apply { initialize() }.acceptAll()
+            assertNotNull(store.loadPending())
+            assertTrue(changes.isEmpty())
+
+            accept()
+            engine(launchConfig(), captcha).initialize()
+
+            val posts = http.posts()
+            assertEquals(2, posts.size)
+            assertFalse(posts[1].has("captchaToken"))
+            assertTrue(posts[1].getJSONObject("cookieConsents").getBoolean("analytics"))
+            assertNull(store.loadPending())
+            assertTrue(state.value.hasConsent("analytics"))
+            assertEquals(true, store.loadConsent()?.get("analytics"))
+            assertEquals(1, changes.size)
+            assertEquals(0, captcha.calls)
+        }
+
+    @Test
+    fun theRetryIsQuietOnAChallengeAndStopsAfterThreeLaunches() =
+        runTest(dispatcher) {
+            http.onConsentLookup(Fixtures.NO_CONSENT)
+            refuse(429)
+            val captcha = FakeCaptchaProvider { "tok" }
+            engine(launchConfig(), captcha).apply { initialize() }.acceptAll()
+
+            refuse(428, "captcha_required")
+            repeat(3) { engine(launchConfig(), captcha).initialize() }
+            assertEquals(0, captcha.calls)
+            assertEquals(4, http.posts().size)
+            assertEquals(3, store.loadPending()?.attempts)
+
+            engine(launchConfig(), captcha).initialize()
+            assertEquals(4, http.posts().size)
+            assertNull(store.loadPending())
+        }
+
+    @Test
+    fun aPendingDecisionOlderThanSevenDaysIsDropped() =
+        runTest(dispatcher) {
+            http.onConsentLookup(Fixtures.NO_CONSENT)
+            val start = 1_700_000_000_000L
+            refuse(429)
+            engine(launchConfig(), now = { start }).apply { initialize() }.acceptAll()
+
+            accept()
+            engine(launchConfig(), now = { start + 8L * 24 * 60 * 60 * 1000 }).initialize()
+
+            assertEquals(1, http.posts().size)
+            assertNull(store.loadPending())
+        }
+
+    @Test
+    fun refusalsThatResendingCannotChangeDropTheDecision() =
+        runTest(dispatcher) {
+            http.onConsentLookup(Fixtures.NO_CONSENT)
+            for (status in listOf(400, 404, 409, 422)) {
+                refuse(429)
+                engine(launchConfig()).apply { initialize() }.acceptAll()
+                assertNotNull("$status", store.loadPending())
+
+                refuse(status)
+                engine(launchConfig()).apply { initialize() }.rejectAll()
+
+                assertNull("$status", store.loadPending())
+            }
+        }
+
+    @Test
+    fun aForbiddenAnswerReachesTheAppAndIsNotRetried() =
+        runTest(dispatcher) {
+            http.onConsentLookup(Fixtures.NO_CONSENT)
+            refuse(403, "Identity token did not verify")
+            engine(launchConfig()).apply { initialize() }.acceptAll()
+            engine(launchConfig()).initialize()
+
+            assertEquals(1, http.posts().size)
+            assertEquals(listOf(ErrorInfo("consent_refused", "Identity token did not verify")), errors)
+            assertNull(store.loadPending())
+        }
+
+    @Test
+    fun aForbiddenAnswerToTheRetryReachesTheAppToo() =
+        runTest(dispatcher) {
+            http.onConsentLookup(Fixtures.NO_CONSENT)
+            refuse(429)
+            engine(launchConfig()).apply { initialize() }.acceptAll()
+
+            refuse(403, "Verified identity required")
+            engine(launchConfig()).initialize()
+
+            assertEquals(listOf(ErrorInfo("consent_refused", "Verified identity required")), errors)
+            assertNull(store.loadPending())
+        }
+
+    @Test
+    fun aPropertyThatRequiresACaptchaKeepsNothingToRetry() =
+        runTest(dispatcher) {
+            http.on("GET", "/api/public/config/${Fixtures.PROPERTY_KEY}", body = Fixtures.configJson(requireCaptcha = true))
+            http.onConsentLookup(Fixtures.NO_CONSENT)
+            refuse(429)
+            engine(launchConfig(), FakeCaptchaProvider { "tok" }).apply { initialize() }.acceptAll()
+
+            assertNull(store.loadPending())
+        }
+
+    @Test
+    fun clearAllForgetsAPendingDecision() =
+        runTest(dispatcher) {
+            http.onConsentLookup(Fixtures.NO_CONSENT)
+            refuse(429)
+            engine(launchConfig()).apply { initialize() }.acceptAll()
+
+            store.clearAll()
+
+            assertNull(store.loadPending())
         }
 
     @Test

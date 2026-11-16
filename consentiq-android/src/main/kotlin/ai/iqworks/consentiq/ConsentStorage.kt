@@ -62,7 +62,21 @@ public class ConsentStore(
             storage.remove(CONSENT_KEY)
             storage.remove(SUBJECT_ID_KEY)
             storage.remove(TCF_KEY)
+            storage.remove(PENDING_KEY)
         }
+    }
+
+    internal fun loadPending(): PendingDecision? {
+        val raw = runCatching { storage.getString(PENDING_KEY) }.getOrNull() ?: return null
+        return runCatching { PendingDecision.fromJson(JSONObject(raw)) }.getOrNull()
+    }
+
+    internal fun savePending(pending: PendingDecision) {
+        runCatching { storage.putString(PENDING_KEY, pending.toJson().toString()) }
+    }
+
+    internal fun clearPending() {
+        runCatching { storage.remove(PENDING_KEY) }
     }
 
     internal fun loadTcf(): JSONObject? {
@@ -102,6 +116,7 @@ public class ConsentStore(
         public const val CONSENT_KEY: String = "consentiq_consent"
         public const val SUBJECT_ID_KEY: String = "consentiq_subject_id"
         public const val TCF_KEY: String = "consentiq_tcf"
+        public const val PENDING_KEY: String = "consentiq_pending"
         internal const val TCF_CMP_ID_KEY: String = "consentiq_tcf_cmp_id"
 
         public fun generateSubjectId(): String = UUID.randomUUID().toString()
