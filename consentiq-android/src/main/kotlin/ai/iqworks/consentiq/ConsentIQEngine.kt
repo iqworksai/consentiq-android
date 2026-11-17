@@ -264,7 +264,7 @@ internal class ConsentIQEngine(
         when (outcome) {
             TcfOutcome.Current -> Unit
             TcfOutcome.Closed -> config.onClose?.invoke()
-            is TcfOutcome.Decided -> applyTcfConsent(outcome.consent, outcome.scope)
+            is TcfOutcome.Decided -> applyTcfConsent(outcome)
             TcfOutcome.NotApplicable -> {
                 canOpenTcf = false
                 fallBackToSheet(sheetOnFallback)
@@ -298,17 +298,25 @@ internal class ConsentIQEngine(
         config.onError?.invoke(ErrorInfo(failure.code, failure.message))
     }
 
-    // The page has already recorded this consent with the TC string, so it is applied locally and not submitted again.
-    private fun applyTcfConsent(
-        consent: Map<String, Boolean>,
-        scope: TcfScope?,
-    ) {
-        if (consent.isEmpty()) return
-        val next = withNecessary(consent)
+    // The page records this consent with the TC string itself, so it is applied locally and not submitted
+    // again. It applies for this session whatever the record did: the keys are what vendor SDKs read now.
+    // One ConsentIQ did not record is not kept, since a resend could not carry its TC string: the next
+    // launch asks again with nothing granted, and the app is told.
+    private fun applyTcfConsent(outcome: TcfOutcome.Decided) {
+        if (outcome.consent.isEmpty()) return
+        val next = withNecessary(outcome.consent)
         state.update { it.copy(consent = next, isSheetVisible = false) }
-        if (subjectId.isNotEmpty()) store.saveConsent(next, subjectId)
-        config.onConsentChange?.invoke(next, state.value.marketingConsent)
-        when (scope ?: inferScope(next)) {
+        if (outcome.recorded) {
+            if (subjectId.isNotEmpty()) store.saveConsent(next, subjectId)
+            store.clearUnrecorded()
+            config.onConsentChange?.invoke(next, state.value.marketingConsent)
+        } else {
+            dropUnrecordedDecision()
+            store.clearTcf()
+            logger.error("[ConsentIQ] TCF decision not recorded (status ${outcome.recordStatus ?: 0})")
+            config.onError?.invoke(ErrorInfo(CONSENT_REFUSED_ERROR, "TCF decision not recorded (status ${outcome.recordStatus ?: 0})"))
+        }
+        when (outcome.scope ?: inferScope(next)) {
             TcfScope.ALL -> config.onAccept?.invoke(AcceptInfo(scope = "all", consent = next))
             TcfScope.NONE -> config.onReject?.invoke(RejectInfo(consent = next))
             TcfScope.CUSTOM -> config.onSave?.invoke(SaveInfo(consent = next))

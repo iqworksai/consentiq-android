@@ -8,6 +8,7 @@
 - A restore refused with `403` drops the local cache, fires `onError` and shows the sheet.
 - A supplied subject id containing `:` no longer throws from `ConsentIQConfig`: `onError` fires with `invalid_subject_id` and consent stays local. `FormConsent.submit()` returns `null` for such an id.
 - The in-app TCF page receives the `identityToken` for a subject id you supply.
+- A TCF decision the in-app page could not record with ConsentIQ (`recorded: false`) applies for the session, but is not kept: the local cache and the stored TC string are dropped, the next launch asks again with nothing granted, and `onError` fires with `consent_refused` and the record's HTTP status.
 
 - When ConsentIQ answers a submit with `428 captcha_required`, which it can do on any property when a submit looks automated, the SDK solves one Cloudflare Turnstile challenge and submits once more. `FormConsent.submit()` does the same.
 - The captcha page is loaded with the property key, so a token is accepted only for that property.

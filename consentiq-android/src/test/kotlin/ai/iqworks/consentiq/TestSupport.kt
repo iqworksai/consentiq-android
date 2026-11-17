@@ -368,6 +368,7 @@ object Fixtures {
         consent: String = """{"necessary":true,"analytics":true,"marketing":false}""",
         restrictions: String = ", \"IABTCF_PublisherRestrictions2\": \"_1_\"",
         scope: String? = null,
+        recorded: String = "",
     ): String =
         """
         {
@@ -379,7 +380,7 @@ object Fixtures {
             "IABTCF_TCString": "$TCF_STRING", "IABTCF_VendorConsents": "0101", "IABTCF_PurposeConsents": "1100000000"$restrictions
           },
           "stored": { "tcString": "$TCF_STRING", "vendorIds": [1, 755], "restrictionsKey": "[]" },
-          "consent": $consent${if (scope == null) "" else ", \"scope\": \"$scope\""}
+          "consent": $consent${if (scope == null) "" else ", \"scope\": \"$scope\""}$recorded
         }
         """.trimIndent()
 

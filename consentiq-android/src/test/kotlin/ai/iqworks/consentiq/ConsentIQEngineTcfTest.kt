@@ -631,4 +631,31 @@ class ConsentIQEngineTcfTest {
             assertEquals(listOf(ErrorInfo(TCF_UNAVAILABLE, "no provider")), errors)
             assertTrue(state.value.isSheetVisible)
         }
+
+    @Test
+    fun anUnrecordedDecisionAppliesForTheSessionThenAsksAgainAndTellsTheApp() =
+        runTest(dispatcher) {
+            answer(pageEvent("show"), pageJson(Fixtures.decisionJson(recorded = ", \"recorded\": false, \"recordStatus\": 503")))
+
+            engine().initialize()
+
+            assertEquals(Fixtures.TCF_STRING, prefs.getString("IABTCF_TCString", null))
+            assertTrue(state.value.hasConsent("analytics"))
+            assertNull(storage.values[ConsentStore.TCF_KEY])
+            assertNull(store.loadConsent())
+            assertTrue(store.isUnrecorded(Fixtures.PROPERTY_KEY))
+            assertTrue(changes.isEmpty())
+            assertEquals(listOf(ErrorInfo("consent_refused", "TCF decision not recorded (status 503)")), errors)
+        }
+
+    @Test
+    fun aRecordedDecisionClearsTheMarker() =
+        runTest(dispatcher) {
+            store.markUnrecorded(Fixtures.PROPERTY_KEY)
+            answer(pageEvent("show"), pageJson(Fixtures.decisionJson(recorded = ", \"recorded\": true")))
+
+            engine().initialize()
+
+            assertFalse(store.isUnrecorded(Fixtures.PROPERTY_KEY))
+        }
 }

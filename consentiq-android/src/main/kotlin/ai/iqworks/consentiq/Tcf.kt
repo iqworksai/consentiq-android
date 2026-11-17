@@ -73,6 +73,10 @@ internal sealed interface TcfMessage {
         val stored: String,
         val consent: Map<String, Boolean>,
         val scope: TcfScope? = null,
+        // Whether ConsentIQ recorded it; a page that predates the field reports nothing, which counts as recorded.
+        val recorded: Boolean = true,
+        // The HTTP status of the refusal when it was not recorded; null when the server never answered.
+        val recordStatus: Int? = null,
     ) : TcfMessage
 
     data class Error(
@@ -117,6 +121,8 @@ private fun parseDecision(json: JSONObject): TcfMessage.Decision? {
         stored.toString(),
         booleanMap(json.objectOrNull("consent")),
         parseTcfScope(json.stringOrNull("scope")),
+        recorded = json.optBoolean("recorded", true),
+        recordStatus = json.intOrNull("recordStatus"),
     )
 }
 
@@ -284,6 +290,8 @@ internal sealed interface TcfOutcome {
     data class Decided(
         val consent: Map<String, Boolean>,
         val scope: TcfScope? = null,
+        val recorded: Boolean = true,
+        val recordStatus: Int? = null,
     ) : TcfOutcome
 
     data class Failed(

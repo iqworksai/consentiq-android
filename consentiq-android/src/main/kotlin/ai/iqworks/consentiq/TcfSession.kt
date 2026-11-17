@@ -119,7 +119,7 @@ internal class TcfSession(
             is TcfMessage.Decision -> {
                 keys.write(message.keys)
                 store.saveTcf(message.stored)
-                Step.Done(TcfOutcome.Decided(message.consent, message.scope))
+                Step.Done(TcfOutcome.Decided(message.consent, message.scope, message.recorded, message.recordStatus))
             }
             is TcfMessage.Error ->
                 Step.Done(if (message.code == TCF_OFF) TcfOutcome.Off else TcfOutcome.Failed(TCF_PAGE_ERROR, message.code))
