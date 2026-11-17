@@ -18,6 +18,7 @@ internal class TcfSession(
         subjectId: String,
         reopen: Boolean,
         siteSubject: Boolean = false,
+        identityToken: String? = null,
         onShow: () -> Unit,
     ): TcfOutcome {
         val events = Channel<TcfEvent>(Channel.UNLIMITED)
@@ -30,7 +31,7 @@ internal class TcfSession(
                 return TcfOutcome.Failed(TCF_UNAVAILABLE, e.message ?: "web view open failed")
             }
         return try {
-            drive(page, events, subjectId, reopen, siteSubject, onShow)
+            drive(page, events, subjectId, reopen, siteSubject, identityToken, onShow)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -46,6 +47,7 @@ internal class TcfSession(
         subjectId: String,
         reopen: Boolean,
         siteSubject: Boolean,
+        identityToken: String?,
         onShow: () -> Unit,
     ): TcfOutcome {
         val ready =
@@ -57,7 +59,7 @@ internal class TcfSession(
         if (ready is TcfEvent.Failed) return TcfOutcome.Failed(TCF_LOAD_FAILED, ready.reason)
 
         val token = newToken()
-        page.start(tcfStartScript(subjectId, store.loadTcf(), store.loadConsent(), reopen, token, siteSubject))
+        page.start(tcfStartScript(subjectId, store.loadTcf(), store.loadConsent(subjectId), reopen, token, siteSubject, identityToken))
 
         val answer =
             withTimeoutOrNull(answerTimeoutMs) { awaitStep(events, token, acceptShow = true, acceptBack = false) }

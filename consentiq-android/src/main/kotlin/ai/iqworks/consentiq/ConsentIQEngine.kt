@@ -67,41 +67,14 @@ internal class ConsentIQEngine(
 
             var found = false
             if (subjectId.isNotEmpty()) {
-                // An id the app chose is read only with its identity token; without one the local copy
-                // stands, since the open lookup reads only ids this SDK generated.
-                val siteSubject = subjectSource != null
-                val lookup =
-                    if (siteSubject && config.identityToken == null) {
-                        null
-                    } else {
-                        runCatching { api.getConsent(subjectId, if (siteSubject) config.identityToken else null) }
-                            .onFailure { e ->
-                                if (e is CancellationException) throw e
-                                logger.warn("[ConsentIQ] Could not restore consent: ${e.message}")
-                            }.getOrNull()
-                    }
-                val existing = lookup?.consent
-                serverConsentedAtMs = existing?.consentedAt?.let(::parseTimestampMs)
-                when {
-                    existing != null -> {
-                        val cookie = withNecessary(existing.cookieConsents)
-                        state.update { it.copy(consent = cookie, marketingConsent = existing.marketingConsents) }
-                        store.saveConsent(cookie)
-                        found = true
-                    }
-                    lookup?.expired == true -> {
-                        store.clearConsent()
-                        clearTcfDecision()
-                    }
-                    else -> {
-                        val local = store.loadConsent()
-                        if (local != null) {
-                            state.update { it.copy(consent = withNecessary(local)) }
-                            found = true
-                        }
-                    }
+                // A decision dropped unrecorded leaves nothing granted: neither an older server record nor
+                // the local copy answers for it, so the sheet asks again.
+                if (!store.isUnrecorded(config.propertyKey)) found = restoreConsent()
+                when (resendPending()) {
+                    ResendOutcome.RECORDED -> found = true
+                    ResendOutcome.DROPPED -> found = false
+                    ResendOutcome.NONE -> Unit
                 }
-                if (resendPending()) found = true
             }
 
             state.update { it.copy(isLoading = false) }
@@ -163,6 +136,58 @@ internal class ConsentIQEngine(
         val next = state.value.marketingConsent + updates
         state.update { it.copy(marketingConsent = next) }
         submit(state.value.consent, next)
+    }
+
+    private suspend fun restoreConsent(): Boolean {
+        // An id the app chose is read only with its identity token; without one the local copy stands,
+        // since the open lookup reads only ids this SDK generated.
+        val siteSubject = subjectSource != null
+        val lookup =
+            if (siteSubject && config.identityToken == null) {
+                null
+            } else {
+                try {
+                    api.getConsent(subjectId, identityTokenForSubject)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: ConsentIQException) {
+                    if (e.status == 403) {
+                        // The token did not verify for this subject, so this device's copy cannot answer
+                        // for them: the sheet asks again, and the app is told.
+                        logger.error("[ConsentIQ] Consent lookup refused: ${e.message}")
+                        store.clearConsent()
+                        config.onError?.invoke(ErrorInfo(CONSENT_REFUSED_ERROR, e.message))
+                        return false
+                    }
+                    logger.warn("[ConsentIQ] Could not restore consent: ${e.message}")
+                    null
+                } catch (e: Exception) {
+                    logger.warn("[ConsentIQ] Could not restore consent: ${e.message}")
+                    null
+                }
+            }
+        val existing = lookup?.consent
+        serverConsentedAtMs = existing?.consentedAt?.let(::parseTimestampMs)
+        when {
+            existing != null -> {
+                val cookie = withNecessary(existing.cookieConsents)
+                state.update { it.copy(consent = cookie, marketingConsent = existing.marketingConsents) }
+                store.saveConsent(cookie, subjectId)
+                return true
+            }
+            lookup?.expired == true -> {
+                store.clearConsent()
+                clearTcfDecision()
+            }
+            else -> {
+                val local = store.loadConsent(subjectId)
+                if (local != null) {
+                    state.update { it.copy(consent = withNecessary(local)) }
+                    return true
+                }
+            }
+        }
+        return false
     }
 
     fun showSheet() {
@@ -232,7 +257,11 @@ internal class ConsentIQEngine(
     ) {
         val session =
             TcfSession(tcfHost, tcfKeys, store, tcfPageUrl(api.baseUrl, config.propertyKey), tcfReadyTimeoutMs, tcfAnswerTimeoutMs)
-        when (val outcome = session.run(subjectId, reopen, siteSubject = subjectSource != null) { config.onOpen?.invoke() }) {
+        val outcome =
+            session.run(subjectId, reopen, siteSubject = subjectSource != null, identityToken = identityTokenForSubject) {
+                config.onOpen?.invoke()
+            }
+        when (outcome) {
             TcfOutcome.Current -> Unit
             TcfOutcome.Closed -> config.onClose?.invoke()
             is TcfOutcome.Decided -> applyTcfConsent(outcome.consent, outcome.scope)
@@ -277,7 +306,7 @@ internal class ConsentIQEngine(
         if (consent.isEmpty()) return
         val next = withNecessary(consent)
         state.update { it.copy(consent = next, isSheetVisible = false) }
-        store.saveConsent(next)
+        if (subjectId.isNotEmpty()) store.saveConsent(next, subjectId)
         config.onConsentChange?.invoke(next, state.value.marketingConsent)
         when (scope ?: inferScope(next)) {
             TcfScope.ALL -> config.onAccept?.invoke(AcceptInfo(scope = "all", consent = next))
@@ -338,13 +367,45 @@ internal class ConsentIQEngine(
         }
     }
 
-    private fun resolveSubjectId(): String =
-        config.subjectId?.takeIf { it.isNotBlank() }
-            ?: if (config.autoGenerateSubjectId) store.getOrCreateSubjectId() else ""
+    private fun resolveSubjectId(): String {
+        val provided = config.subjectId?.takeIf { it.isNotBlank() }
+        if (provided != null) {
+            if (isValidSubjectId(provided)) return provided
+            logger.error("[ConsentIQ] $INVALID_SUBJECT_ID_MESSAGE")
+            config.onError?.invoke(ErrorInfo(INVALID_SUBJECT_ID_ERROR, INVALID_SUBJECT_ID_MESSAGE))
+            return ""
+        }
+        return if (config.autoGenerateSubjectId) store.getOrCreateSubjectId() else ""
+    }
 
     // The app's own subject id, rather than one this SDK generated.
     private val subjectSource: String?
         get() = if (!config.subjectId.isNullOrBlank() && subjectId == config.subjectId) SITE_SUBJECT_SOURCE else null
+
+    // The identity token, only where it can verify: with the app's own subject id. A generated id is
+    // random, so a token signed for the app's user never matches it.
+    private val identityTokenForSubject: String?
+        get() = if (subjectSource != null) config.identityToken else null
+
+    private val noticeVersion: Int?
+        get() = loadedConfig?.banner?.noticeVersion
+
+    private val categoryCodes: List<String>
+        get() =
+            loadedConfig
+                ?.categories
+                ?.map { it.code }
+                ?.sorted()
+                .orEmpty()
+
+    private class UnrecordedDecision(
+        val cookie: Map<String, Boolean>,
+        val marketing: Map<String, Boolean>,
+        val subjectId: String,
+        val generation: Int,
+    )
+
+    private enum class ResendOutcome { NONE, RECORDED, DROPPED }
 
     private suspend fun submit(
         cookie: Map<String, Boolean>,
@@ -354,13 +415,12 @@ internal class ConsentIQEngine(
             logger.debug("[ConsentIQ] No subject id; consent kept locally only")
             return
         }
-        // A new decision replaces any earlier one still waiting to be resent.
-        store.clearPending()
-        val submittedFor = subjectId
-        val generation = resetGeneration
+        // The decision applies at once and stands locally; the server record makes it stand across launches.
+        store.saveConsent(cookie, subjectId)
+        val decision = UnrecordedDecision(cookie, marketing, subjectId, resetGeneration)
         val captchaToken =
             if (loadedConfig.requiresCaptcha()) {
-                captcha.tokenOrWarn(logger) ?: return
+                captcha.tokenOrWarn(logger) ?: return settleFailure(null, CAPTCHA_FAILED_WARNING, decision)
             } else {
                 null
             }
@@ -368,66 +428,92 @@ internal class ConsentIQEngine(
             submitAnsweringChallenge(captchaToken, { captcha }, logger) { token ->
                 api.submitConsent(
                     ConsentSubmission(
-                        subjectId = subjectId,
+                        subjectId = decision.subjectId,
                         cookieConsents = cookie,
                         marketingConsents = marketing,
                         consentMethod = "sdk",
                         captchaToken = token,
-                        identityToken = config.identityToken,
+                        identityToken = identityTokenForSubject,
                         subjectSource = subjectSource,
                     ),
                 )
-            } ?: return
+            } ?: return settleFailure(null, CAPTCHA_FAILED_WARNING, decision)
+            if (decision.generation != resetGeneration) return
             store.clearPending()
-            store.saveConsent(cookie)
+            store.clearUnrecorded()
             config.onConsentChange?.invoke(cookie, marketing)
         } catch (e: CancellationException) {
             throw e
         } catch (e: ConsentIQException) {
             logger.error("[ConsentIQ] Failed to submit consent: ${e.message}")
-            handleRefusal(e, cookie, marketing, submittedFor, generation)
+            settleFailure(e.status, e.message, decision)
         } catch (e: Exception) {
             logger.error("[ConsentIQ] Failed to submit consent: ${e.message}")
+            settleFailure(null, e.message, decision)
         }
     }
 
-    // 429 keeps the decision for one quiet retry per launch; a refusal resending cannot change drops
-    // it; 403 (an identity token that did not verify, or one the property requires) goes to the app.
-    private fun handleRefusal(
-        e: ConsentIQException,
-        cookie: Map<String, Boolean>,
-        marketing: Map<String, Boolean>,
-        submittedFor: String,
-        generation: Int,
+    // A submit ConsentIQ did not record. Retryable (no answer, a 5xx, a 429, an unanswered challenge)
+    // keeps it as the pending decision, replacing any earlier one. Anything else, or any failure on a
+    // property that requires a captcha on every submit (a resend cannot carry one), is final: the
+    // decision and its local copy are dropped, the next launch asks again, and the app is told.
+    private fun settleFailure(
+        status: Int?,
+        message: String?,
+        decision: UnrecordedDecision,
     ) {
-        when {
-            e.status == 429 && !loadedConfig.requiresCaptcha() -> {
-                if (generation == resetGeneration) {
-                    store.savePending(
-                        PendingDecision(cookie, marketing, 0, now(), submittedFor, config.propertyKey, config.apiUrl),
-                    )
-                }
-            }
-            e.status == 403 -> refused(e)
-            e.dropsTheDecision -> store.clearPending()
+        // A submit that started before a reset belongs to the state the reset cleared.
+        if (decision.generation != resetGeneration) return
+        if ((status != null && isFinalStatus(status)) || loadedConfig.requiresCaptcha()) {
+            dropUnrecordedDecision()
+            config.onError?.invoke(ErrorInfo(CONSENT_REFUSED_ERROR, message))
+            return
         }
+        store.savePending(
+            PendingDecision(
+                decision.cookie,
+                decision.marketing,
+                0,
+                now(),
+                decision.subjectId,
+                config.propertyKey,
+                config.apiUrl,
+                noticeVersion,
+                categoryCodes,
+            ),
+        )
     }
 
-    private fun refused(e: ConsentIQException) {
+    // The decision was never recorded and never will be: its local copy goes with it, and the next launch
+    // asks again with nothing granted rather than restoring an older choice.
+    private fun dropUnrecordedDecision() {
         store.clearPending()
-        config.onError?.invoke(ErrorInfo(CONSENT_REFUSED_ERROR, e.message))
+        store.clearConsent()
+        store.markUnrecorded(config.propertyKey)
     }
 
-    // Resends a decision kept after a 429, once per launch and never with a captcha. True when it was
-    // recorded, so the sheet need not ask again.
-    private suspend fun resendPending(): Boolean {
-        val pending = store.loadPending() ?: return false
-        val owned = pending.belongsTo(subjectId, config.propertyKey, config.apiUrl)
-        // A record the server made after this decision is the newer choice, so it wins.
-        val superseded = serverConsentedAtMs?.let { it > pending.createdAtMs } ?: false
-        if (!owned || superseded || pending.isSpent(now()) || loadedConfig.requiresCaptcha()) {
+    // At launch the dropped decision's local copy may already be applied, so it is taken back too.
+    private fun dropAtLaunch(): ResendOutcome {
+        dropUnrecordedDecision()
+        state.update { it.copy(consent = DEFAULT_CONSENT, marketingConsent = emptyMap()) }
+        return ResendOutcome.DROPPED
+    }
+
+    // Resends a decision ConsentIQ has not recorded, once per launch and never with a captcha.
+    private suspend fun resendPending(): ResendOutcome {
+        val pending = store.loadPending() ?: return ResendOutcome.NONE
+        if (!pending.belongsTo(subjectId, config.propertyKey, config.apiUrl)) {
+            // Another person's, property's or server's: never sent here.
             store.clearPending()
-            return false
+            return ResendOutcome.NONE
+        }
+        // A record the server made after this decision is the newer choice, so it wins.
+        if (serverConsentedAtMs?.let { it > pending.createdAtMs } == true) {
+            store.clearPending()
+            return ResendOutcome.NONE
+        }
+        if (pending.isSpent(now()) || !pending.matches(noticeVersion, categoryCodes) || loadedConfig.requiresCaptcha()) {
+            return dropAtLaunch()
         }
         store.savePending(pending.copy(attempts = pending.attempts + 1))
         try {
@@ -437,30 +523,31 @@ internal class ConsentIQEngine(
                     cookieConsents = pending.cookieConsents,
                     marketingConsents = pending.marketingConsents,
                     consentMethod = "sdk",
-                    identityToken = config.identityToken,
+                    identityToken = identityTokenForSubject,
                     subjectSource = subjectSource,
+                    noticeVersion = pending.noticeVersion,
                 ),
             )
         } catch (e: CancellationException) {
             throw e
         } catch (e: ConsentIQException) {
             logger.debug("[ConsentIQ] Pending consent not recorded: ${e.message}")
-            if (e.status == 403) {
-                refused(e)
-            } else if (e.dropsTheDecision) {
-                store.clearPending()
+            if (isFinalStatus(e.status)) {
+                config.onError?.invoke(ErrorInfo(CONSENT_REFUSED_ERROR, e.message))
+                return dropAtLaunch()
             }
-            return false
+            return ResendOutcome.NONE
         } catch (e: Exception) {
             logger.debug("[ConsentIQ] Pending consent not recorded: ${e.message}")
-            return false
+            return ResendOutcome.NONE
         }
         store.clearPending()
+        store.clearUnrecorded()
         val cookie = withNecessary(pending.cookieConsents)
         state.update { it.copy(consent = cookie, marketingConsent = pending.marketingConsents) }
-        store.saveConsent(cookie)
+        store.saveConsent(cookie, subjectId)
         config.onConsentChange?.invoke(cookie, pending.marketingConsents)
-        return true
+        return ResendOutcome.RECORDED
     }
 
     // java.time needs API 26; this library supports 24.

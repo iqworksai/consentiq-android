@@ -59,6 +59,7 @@ internal fun parsePropertyConfig(json: JSONObject): PropertyConfig {
                 noticeUrl = banner.stringOrNull("noticeUrl"),
                 bannerBgColor = banner.stringOrNull("bannerBgColor"),
                 bannerTextColor = banner.stringOrNull("bannerTextColor"),
+                noticeVersion = banner.intOrNull("noticeVersion"),
             ),
         categories =
             json.arrayOrEmpty("categories").objects().map {
@@ -256,5 +257,6 @@ internal fun ConsentSubmission.toJson(propertyKey: String): JSONObject {
     captchaToken?.let { json.put("captchaToken", it) }
     identityToken?.let { json.put("identityToken", it) }
     subjectSource?.let { json.put("subjectSource", it) }
+    noticeVersion?.let { json.put("noticeVersion", it) }
     return json
 }

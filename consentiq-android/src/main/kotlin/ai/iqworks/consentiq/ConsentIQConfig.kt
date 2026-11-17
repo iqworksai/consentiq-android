@@ -8,7 +8,7 @@ public data class ConsentIQConfig(
     val autoShow: Boolean = true,
     val language: String? = null,
     val debug: Boolean = false,
-    // Your server's signature for this person, sent with every submission unread.
+    // Your server's signature for this person, sent unread with every submission for the subjectId you supply.
     val identityToken: String? = null,
     // Only for an app also distributed outside Google Play; a Play app needs no project number.
     val playIntegrityCloudProjectNumber: Long? = null,
@@ -19,18 +19,15 @@ public data class ConsentIQConfig(
     val onSave: ((SaveInfo) -> Unit)? = null,
     val onClose: (() -> Unit)? = null,
     val onError: ((ErrorInfo) -> Unit)? = null,
-) {
-    init {
-        subjectId?.let(::requireValidSubjectId)
-    }
-}
+)
 
 internal const val SITE_SUBJECT_SOURCE = "site"
 
 // ConsentIQ refuses a subject id containing ':', which would let it pose as an id of another kind.
-internal fun requireValidSubjectId(subjectId: String) {
-    require(':' !in subjectId) { "ConsentIQ subjectId may not contain ':'" }
-}
+internal fun isValidSubjectId(subjectId: String): Boolean = ':' !in subjectId
+
+internal const val INVALID_SUBJECT_ID_ERROR = "invalid_subject_id"
+internal const val INVALID_SUBJECT_ID_MESSAGE = "ConsentIQ subjectId may not contain ':'"
 
 public data class ConsentIQState(
     val consent: Map<String, Boolean> = DEFAULT_CONSENT,

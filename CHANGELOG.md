@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- A decision ConsentIQ has not recorded is kept for a later resend on no answer, a `5xx`, `429` or an unanswered challenge, not only on `429`, and a newer decision replaces it. A `400`, `403`, `404`, `409` or `422`, or any failure on a property that requires a captcha on every submit, drops it with its local cache, fires `onError` (`consent_refused`), and the next launch asks again with nothing granted. A kept decision carries the notice version it was made under and is dropped when the notice or the categories change.
+- The local cache is written before the post and belongs to its subject id; a different subject id shows the sheet again.
+- `identityToken` is sent only with a subject id you supply. `FormConsent` takes `identityFor` and sends the signed identifier when the subject is that identifier written differently.
+- A restore refused with `403` drops the local cache, fires `onError` and shows the sheet.
+- A supplied subject id containing `:` no longer throws from `ConsentIQConfig`: `onError` fires with `invalid_subject_id` and consent stays local. `FormConsent.submit()` returns `null` for such an id.
+- The in-app TCF page receives the `identityToken` for a subject id you supply.
+
 - When ConsentIQ answers a submit with `428 captcha_required`, which it can do on any property when a submit looks automated, the SDK solves one Cloudflare Turnstile challenge and submits once more. `FormConsent.submit()` does the same.
 - The captcha page is loaded with the property key, so a token is accepted only for that property.
 - A challenge stays hidden unless Cloudflare asks for interaction; then it is shown in a dialog with the system Cancel button. Once shown it waits up to 2 minutes. Cancelling, a failure or a timeout sends nothing more, keeps the local state and logs the usual captcha warning.

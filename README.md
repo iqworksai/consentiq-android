@@ -116,12 +116,12 @@ Operations:
 | `showTcfPreferences()` | Re-opens the TCF screens. Returns `false`, and does nothing, when TCF is not active |
 | `hideSheet()` | Closes the sheet from your code. Fires nothing |
 | `dismissSheet()` | Closes the sheet on behalf of the visitor (back button, swipe). Fires `onClose` |
-| `resetConsent()` | Clears the consent map, the cache and the subject id, then generates a fresh subject id |
+| `resetConsent()` | Clears the consent map, the cache, any decision waiting to be resent and the subject id, then generates a fresh subject id |
 | `subjectId` | The subject id in use, or `null` before initialization |
 
 `acceptAll`, `rejectAll`, `savePreferences`, `updateConsent` and `updateMarketingConsent` are `suspend` functions. Each has a fire-and-forget twin with an `Async` suffix (`acceptAllAsync()` and so on) that launches on the main thread and returns the `Job`.
 
-Every write updates the state first, then posts the consent to ConsentIQ, then persists the local cache, then calls `onConsentChange`. A failed request is logged and the local state is kept. When ConsentIQ answers `429 Too many requests`, the decision is kept and sent once more on each of the next launches, without a captcha, until it is recorded, three attempts have been made, or seven days have passed. A `400`, `404`, `409` or `422` answer drops it, and a `403` fires `onError` with code `consent_refused` and is not retried. It is resent only for the same subject id, property and API URL, a newer decision replaces it, and a newer record on ConsentIQ for that person wins over it.
+Every write updates the state and the local cache first, then posts the consent to ConsentIQ, and calls `onConsentChange` once it is recorded. The local cache belongs to the subject id it was written for; another subject never inherits it. When the post gets no answer, a `5xx`, `429 Too many requests` or a challenge left unanswered, the decision is kept and sent once more on each of the next launches, without a captcha, until it is recorded, three attempts have been made, seven days have passed, or the banner's notice or categories changed. It carries the notice version it was made under. A `400`, `403`, `404`, `409` or `422` answer, or any failure on a property that requires a captcha on every submit, is final: the decision and its local cache are dropped, `onError` fires with code `consent_refused`, and the next launch asks again with nothing granted rather than restoring an older choice. A decision is resent only for the same subject id, property and API URL, a newer decision replaces it, and a newer record on ConsentIQ for that person wins over it. A restore refused with `403` drops the local cache too, fires `onError` and shows the sheet.
 
 `ConsentIQConfig` fields:
 
@@ -129,13 +129,13 @@ Every write updates the state first, then posts the consent to ConsentIQ, then p
 | --- | --- | --- |
 | `propertyKey` | required | The property's public key |
 | `apiUrl` | `https://consent.iqworks.ai` | ConsentIQ base URL |
-| `subjectId` | `null` | Supply your own subject id instead of a generated one. It must be random and unguessable, never an account number, email address or phone number: the consent lookup needs only the property key, which ships in your app. It may not contain `:`. The SDK marks it as yours (`subjectSource: "site"`), so ConsentIQ keeps it apart from generated ids. Its stored consent is restored only with `identityToken`; without one the SDK relies on the copy on the device |
+| `subjectId` | `null` | Supply your own subject id instead of a generated one. It must be random and unguessable, never an account number, email address or phone number: the consent lookup needs only the property key, which ships in your app. It may not contain `:`; such an id fires `onError` with code `invalid_subject_id`, and the SDK keeps consent local. The SDK marks it as yours (`subjectSource: "site"`), so ConsentIQ keeps it apart from generated ids. Its stored consent is restored only with `identityToken`; without one the SDK relies on the copy on the device |
 | `autoGenerateSubjectId` | `true` | Generate and persist a UUID when no subject id is supplied |
 | `autoShow` | `true` | Show the sheet automatically when no consent is found |
 | `language` | `null` | Force a language; otherwise the property's default language, then `en` |
 | `debug` | `false` | Log request details to Logcat under the `ConsentIQ` tag. Turn it on in debug builds only |
 | `playIntegrityCloudProjectNumber` | `null` | Only for an app also distributed outside Google Play: the Google Cloud project number linked to it. A Play app needs none, see Limitations |
-| `identityToken` | `null` | Your server's signature for this person, sent with every submit. ConsentIQ verifies it and marks the record verified by your organization. Sign on your server, never in the app. `FormConsent` takes the same parameter |
+| `identityToken` | `null` | Your server's signature for this person, sent with every submit for the `subjectId` you supply (never with a generated id, which it cannot match). ConsentIQ verifies it and marks the record verified by your organization. Sign on your server, never in the app. `FormConsent` takes the same parameter, plus `identityFor`: the identifier it was signed for. When the subject id is that identifier written differently (an email's case, a phone's spacing) the signed form is sent, and any other subject goes unsigned |
 
 With `autoShow = false` and TCF active, the TCF screens also wait for `showSheet()`. `IABTCF_gdprApplies` is still written at start-up; whether a stored TC string is out of date is checked when the screens next open.
 
@@ -155,7 +155,7 @@ All callbacks are optional fields on `ConsentIQConfig` and run on the thread tha
 | `onReject(RejectInfo)` | The visitor rejected all optional categories |
 | `onSave(SaveInfo)` | The visitor saved a custom selection |
 | `onClose()` | The visitor backed out without answering. Never fires on accept, reject, save or `hideSheet()` |
-| `onError(ErrorInfo)` | Something the SDK could not do, with a stable `code` and a `message`. The TCF screens report `tcf-unsupported`, `tcf-unavailable`, `tcf-timeout`, `tcf-load-failed` and `tcf-page-error`; a submit ConsentIQ refused with 403 (an identity token that did not verify, or one the property requires) reports `consent_refused` with the server's message |
+| `onError(ErrorInfo)` | Something the SDK could not do, with a stable `code` and a `message`. The TCF screens report `tcf-unsupported`, `tcf-unavailable`, `tcf-timeout`, `tcf-load-failed` and `tcf-page-error`; a decision ConsentIQ refused for good (`400`, `403`, `404`, `409`, `422`, or any failure under Require CAPTCHA) or a restore refused with `403` reports `consent_refused` with the server's message; a supplied subject id containing `:` reports `invalid_subject_id` |
 
 ## IAB TCF
 

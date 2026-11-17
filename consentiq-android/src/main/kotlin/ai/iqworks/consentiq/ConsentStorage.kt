@@ -53,17 +53,46 @@ public class ConsentStore(
         runCatching { storage.putString(CONSENT_KEY, consent.toJson().toString()) }
     }
 
+    /** The local copy, only when it was written for this subject: another subject never inherits it. */
+    public fun loadConsent(subjectId: String): Map<String, Boolean>? {
+        val owner = runCatching { storage.getString(CONSENT_SUBJECT_KEY) }.getOrNull()
+        return if (owner == subjectId) loadConsent() else null
+    }
+
+    public fun saveConsent(
+        consent: Map<String, Boolean>,
+        subjectId: String,
+    ) {
+        saveConsent(consent)
+        runCatching { storage.putString(CONSENT_SUBJECT_KEY, subjectId) }
+    }
+
     public fun clearConsent() {
-        runCatching { storage.remove(CONSENT_KEY) }
+        runCatching {
+            storage.remove(CONSENT_KEY)
+            storage.remove(CONSENT_SUBJECT_KEY)
+        }
     }
 
     public fun clearAll() {
         runCatching {
             storage.remove(CONSENT_KEY)
+            storage.remove(CONSENT_SUBJECT_KEY)
             storage.remove(SUBJECT_ID_KEY)
             storage.remove(TCF_KEY)
             storage.remove(PENDING_KEY)
+            storage.remove(UNRECORDED_KEY)
         }
+    }
+
+    internal fun isUnrecorded(propertyKey: String): Boolean = runCatching { storage.getString(UNRECORDED_KEY) }.getOrNull() == propertyKey
+
+    internal fun markUnrecorded(propertyKey: String) {
+        runCatching { storage.putString(UNRECORDED_KEY, propertyKey) }
+    }
+
+    internal fun clearUnrecorded() {
+        runCatching { storage.remove(UNRECORDED_KEY) }
     }
 
     internal fun loadPending(): PendingDecision? {
@@ -119,6 +148,15 @@ public class ConsentStore(
         public const val SUBJECT_ID_KEY: String = "consentiq_subject_id"
         public const val TCF_KEY: String = "consentiq_tcf"
         public const val PENDING_KEY: String = "consentiq_pending"
+
+        /** The subject the local copy was written for. */
+        public const val CONSENT_SUBJECT_KEY: String = "consentiq_consent_subject"
+
+        /**
+         * Set to the property key when a decision was dropped without ConsentIQ recording it. While it
+         * stands the sheet asks again with nothing granted. The next recorded decision clears it.
+         */
+        public const val UNRECORDED_KEY: String = "consentiq_unrecorded_decision"
         internal const val TCF_CMP_ID_KEY: String = "consentiq_tcf_cmp_id"
 
         public fun generateSubjectId(): String = UUID.randomUUID().toString()

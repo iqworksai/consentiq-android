@@ -156,6 +156,7 @@ internal fun tcfStartScript(
     reopen: Boolean,
     token: String,
     siteSubject: Boolean = false,
+    identityToken: String? = null,
 ): String {
     val options =
         JSONObject()
@@ -165,6 +166,7 @@ internal fun tcfStartScript(
             .put("reopen", reopen)
             .put("token", token)
     if (siteSubject) options.put("subjectSource", SITE_SUBJECT_SOURCE)
+    identityToken?.let { options.put("identityToken", it) }
     return "window.consentiqTcfStart($options)"
 }
 

@@ -33,6 +33,7 @@ class FormConsentTest {
         sharedConfig: PropertyConfig? = null,
         captcha: CaptchaTokenProvider = CaptchaTokenProvider.UNAVAILABLE,
         identityToken: String? = null,
+        identityFor: String? = null,
     ) = FormConsent(
         propertyKey = Fixtures.PROPERTY_KEY,
         subjectId = subjectId,
@@ -45,6 +46,7 @@ class FormConsentTest {
         sharedConfig = { key, baseUrl -> sharedConfig?.takeIf { key == Fixtures.PROPERTY_KEY && baseUrl == "http://stub" } },
         captcha = { captcha },
         identityToken = identityToken,
+        identityFor = identityFor,
     )
 
     private fun captchaConfig(): PropertyConfig = parsePropertyConfig(JSONObject(Fixtures.configJson(requireCaptcha = true)))
@@ -52,10 +54,32 @@ class FormConsentTest {
     private fun configRequests() = http.requests.count { it.method == "GET" && it.url.endsWith(configPath) }
 
     @Test
-    fun aSubjectIdWithAColonIsRefusedAtOnce() {
-        val error = runCatching { form(subjectId = "site:user-1") }.exceptionOrNull()
-        assertTrue(error is IllegalArgumentException)
-    }
+    fun aSubjectIdWithAColonIsRefusedAndNothingIsSent() =
+        runTest(dispatcher) {
+            assertNull(form(subjectId = "site:user-1").submit())
+            assertTrue(http.posts().isEmpty())
+            assertTrue(logger.errors.any { it.contains("may not contain ':'") })
+        }
+
+    @Test
+    fun sendsTheSignedIdentifierWhenTheSubjectIsItWrittenDifferently() =
+        runTest(dispatcher) {
+            http.on("POST", "/api/public/consent", body = Fixtures.SUBMIT_OK)
+            form(subjectId = "Alice@Example.com", identityToken = "v2.1.sig", identityFor = "alice@example.com").submit()
+            val post = http.posts().single()
+            assertEquals("alice@example.com", post.getString("subjectId"))
+            assertEquals("v2.1.sig", post.getString("identityToken"))
+        }
+
+    @Test
+    fun sendsAnotherSubjectUnsigned() =
+        runTest(dispatcher) {
+            http.on("POST", "/api/public/consent", body = Fixtures.SUBMIT_OK)
+            form(subjectId = "bob@example.com", identityToken = "v2.1.sig", identityFor = "alice@example.com").submit()
+            val post = http.posts().single()
+            assertEquals("bob@example.com", post.getString("subjectId"))
+            assertFalse(post.has("identityToken"))
+        }
 
     @Test
     fun defaultsToTheFourChannelsOff() {

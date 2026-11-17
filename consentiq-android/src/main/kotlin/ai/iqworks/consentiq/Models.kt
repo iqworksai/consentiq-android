@@ -62,6 +62,8 @@ public data class BannerConfig(
     val noticeUrl: String?,
     val bannerBgColor: String? = null,
     val bannerTextColor: String? = null,
+    // The version of the notice the banner links, which a resent decision carries.
+    val noticeVersion: Int? = null,
 )
 
 public data class CategoryInfo(
@@ -175,6 +177,8 @@ public data class ConsentSubmission(
     val identityToken: String? = null,
     // "site" for a subject id the app chose, so the server keeps it apart from SDK-generated ids.
     val subjectSource: String? = null,
+    // The notice version a resent decision was made under; ConsentIQ refuses it once the notice changed.
+    val noticeVersion: Int? = null,
 )
 
 public data class SubmitResult(

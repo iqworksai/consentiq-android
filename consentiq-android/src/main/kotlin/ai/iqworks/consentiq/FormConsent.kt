@@ -27,9 +27,12 @@ public class FormConsent internal constructor(
     private val captcha: () -> CaptchaTokenProvider,
     private val identityToken: String? = null,
     attestation: AppAttestation? = null,
+    // The identifier identityToken was signed for. When the subject id is that identifier written
+    // differently (an email's case, a phone's spacing) the signed form is sent; any other subject goes
+    // unsigned, since the token cannot verify for it.
+    private val identityFor: String? = null,
 ) {
     init {
-        requireValidSubjectId(subjectId)
         if (attestation != null) api.attestation = attestation
     }
 
@@ -44,6 +47,7 @@ public class FormConsent internal constructor(
         identityToken: String? = null,
         api: ConsentIQApiClient = ConsentIQApiClient(propertyKey, apiUrl),
         logger: ConsentIQLogger = ConsentIQLogger.NONE,
+        identityFor: String? = null,
     ) : this(
         propertyKey = propertyKey,
         subjectId = subjectId,
@@ -57,6 +61,7 @@ public class FormConsent internal constructor(
         captcha = { ConsentIQ.captchaProviderFor(api.baseUrl, propertyKey) },
         identityToken = identityToken,
         attestation = ConsentIQ.appAttestation(logger),
+        identityFor = identityFor,
     )
 
     private val configMutex = Mutex()
@@ -84,6 +89,11 @@ public class FormConsent internal constructor(
 
     public suspend fun submit(): FormConsentResult? {
         if (subjectId.isBlank()) return null
+        if (!isValidSubjectId(subjectId)) {
+            logger.error("[ConsentIQ] $INVALID_SUBJECT_ID_MESSAGE")
+            return null
+        }
+        val (signedSubjectId, signedToken) = signedSubject(identityToken, identityFor, subjectId)
         mutableSubmitting.value = true
         try {
             val snapshot = mutableConsents.value
@@ -97,12 +107,12 @@ public class FormConsent internal constructor(
                 submitAnsweringChallenge(captchaToken, captcha, logger) { token ->
                     api.submitConsent(
                         ConsentSubmission(
-                            subjectId = subjectId,
+                            subjectId = signedSubjectId,
                             subjectType = subjectType,
                             marketingConsents = snapshot,
                             consentMethod = "form",
                             captchaToken = token,
-                            identityToken = identityToken,
+                            identityToken = signedToken,
                             subjectSource = SITE_SUBJECT_SOURCE,
                         ),
                     )

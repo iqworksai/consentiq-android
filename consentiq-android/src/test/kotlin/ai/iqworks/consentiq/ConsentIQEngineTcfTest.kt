@@ -309,7 +309,7 @@ class ConsentIQEngineTcfTest {
     fun startCarriesTheSubjectStoredDecisionAndCategoryMap() =
         runTest(dispatcher) {
             store.saveTcf("""{"tcString":"${Fixtures.TCF_STRING}","vendorIds":[1],"restrictionsKey":"[]"}""")
-            store.saveConsent(mapOf("necessary" to true, "analytics" to true))
+            store.saveConsent(mapOf("necessary" to true, "analytics" to true), store.getOrCreateSubjectId())
             answer(pageEvent("current"))
             val engine = engine()
 
