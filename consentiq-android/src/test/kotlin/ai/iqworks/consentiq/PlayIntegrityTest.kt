@@ -25,8 +25,12 @@ class PlayIntegrityTest {
     }
 
     @Test
-    fun theRequestHashIsTheBodysSha256() {
-        assertEquals("AVq9f1zFei3ZS3WQ8ErYCEJzkF7jPsXOvq5iJ2qX-GI", integrityRequestHash("""{"a":1}"""))
+    fun theNonceIsTheBodysSha256AndMeetsClassicLengthRules() {
+        val nonce = integrityNonce("""{"a":1}""")
+        assertEquals("AVq9f1zFei3ZS3WQ8ErYCEJzkF7jPsXOvq5iJ2qX-GI", nonce)
+        // Classic requests refuse a nonce outside 16 to 500 characters, or one that is not web-safe base64.
+        assertTrue(nonce.length in 16..500)
+        assertTrue(nonce.all { it.isLetterOrDigit() || it == '-' || it == '_' })
     }
 
     @Test
@@ -44,7 +48,7 @@ class PlayIntegrityTest {
                     logger,
                 ).headers("body")
             assertEquals(mapOf("X-ConsentIQ-Integrity" to "token-1"), signed)
-            assertEquals(listOf(integrityRequestHash("body")), hashes)
+            assertEquals(listOf(integrityNonce("body")), hashes)
 
             assertEquals(emptyMap<String, String>(), AppAttestation(null, logger).headers("body"))
             assertEquals(emptyMap<String, String>(), AppAttestation({ null }, logger).headers("body"))
@@ -76,7 +80,7 @@ class PlayIntegrityTest {
 
             val request = http.requests.single()
             assertEquals("token-1", request.headers["X-ConsentIQ-Integrity"])
-            assertEquals(listOf(integrityRequestHash(request.body!!)), hashes)
+            assertEquals(listOf(integrityNonce(request.body!!)), hashes)
         }
 
     @Test

@@ -10,7 +10,7 @@ public data class ConsentIQConfig(
     val debug: Boolean = false,
     // Your server's signature for this person, sent with every submission unread.
     val identityToken: String? = null,
-    // Your Google Cloud project number, which turns on Play Integrity; without it ConsentIQ asks for a captcha.
+    // Only for an app also distributed outside Google Play; a Play app needs no project number.
     val playIntegrityCloudProjectNumber: Long? = null,
     val onConsentChange: ((consent: Map<String, Boolean>, marketing: Map<String, Boolean>) -> Unit)? = null,
     val onOpen: (() -> Unit)? = null,

@@ -49,7 +49,7 @@ public object ConsentIQ {
         val app = context.applicationContext ?: context
         trackActivities(app)
         val log = AndroidLogger(config.debug)
-        integritySource = config.playIntegrityCloudProjectNumber?.let { PlayIntegrityTokenSource(app, it) }
+        integritySource = PlayIntegrityTokenSource(app, config.playIntegrityCloudProjectNumber)
         val api = ConsentIQApiClient(config.propertyKey, config.apiUrl, logger = log)
         api.attestation = appAttestation(log)
         initWith(
