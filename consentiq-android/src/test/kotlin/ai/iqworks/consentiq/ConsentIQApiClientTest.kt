@@ -153,6 +153,20 @@ class ConsentIQApiClientTest {
         }
 
     @Test
+    fun getConsentWithAnIdentityTokenPostsItAndEncodesTheId() =
+        runTest {
+            route("/api/public/consent/${Fixtures.PROPERTY_KEY}/user%2042", body = Fixtures.savedConsentJson())
+
+            val lookup = client().getConsent("user 42", identityToken = "v2.1.sig")
+
+            val request = received.single()
+            assertEquals("POST", request.method)
+            assertEquals("/api/public/consent/${Fixtures.PROPERTY_KEY}/user%2042", request.path)
+            assertEquals("v2.1.sig", JSONObject(request.body).getString("identityToken"))
+            assertNotNull(lookup.consent)
+        }
+
+    @Test
     fun getConsentPassesExpiredThrough() =
         runTest {
             route("/api/public/consent/${Fixtures.PROPERTY_KEY}/subj-1", body = Fixtures.EXPIRED)

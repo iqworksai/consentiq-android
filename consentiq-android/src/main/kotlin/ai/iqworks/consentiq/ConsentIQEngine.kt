@@ -67,12 +67,19 @@ internal class ConsentIQEngine(
 
             var found = false
             if (subjectId.isNotEmpty()) {
+                // An id the app chose is read only with its identity token; without one the local copy
+                // stands, since the open lookup reads only ids this SDK generated.
+                val siteSubject = subjectSource != null
                 val lookup =
-                    runCatching { api.getConsent(subjectId) }
-                        .onFailure { e ->
-                            if (e is CancellationException) throw e
-                            logger.warn("[ConsentIQ] Could not restore consent: ${e.message}")
-                        }.getOrNull()
+                    if (siteSubject && config.identityToken == null) {
+                        null
+                    } else {
+                        runCatching { api.getConsent(subjectId, if (siteSubject) config.identityToken else null) }
+                            .onFailure { e ->
+                                if (e is CancellationException) throw e
+                                logger.warn("[ConsentIQ] Could not restore consent: ${e.message}")
+                            }.getOrNull()
+                    }
                 val existing = lookup?.consent
                 serverConsentedAtMs = existing?.consentedAt?.let(::parseTimestampMs)
                 when {

@@ -233,13 +233,49 @@ class ConsentIQEngineTest {
     @Test
     fun suppliedSubjectIdIsUsedAndNotPersisted() =
         runTest(dispatcher) {
-            http.on("GET", "/api/public/consent/${Fixtures.PROPERTY_KEY}/user-42", body = Fixtures.NO_CONSENT)
             val engine = engine(config(subjectId = "user-42"))
 
             engine.initialize()
 
             assertEquals("user-42", engine.subjectId)
             assertNull(storage.values["consentiq_subject_id"])
+        }
+
+    @Test
+    fun aSuppliedSubjectIsRestoredOnlyWithItsIdentityToken() =
+        runTest(dispatcher) {
+            val path = "/api/public/consent/${Fixtures.PROPERTY_KEY}/user-42"
+            http.on("POST", path, body = Fixtures.savedConsentJson(analytics = true, email = true))
+
+            engine(config(subjectId = "user-42").copy(identityToken = "v2.1.sig")).initialize()
+
+            val restore = http.requests.single { it.url.endsWith(path) }
+            assertEquals("POST", restore.method)
+            assertEquals("v2.1.sig", JSONObject(restore.body!!).getString("identityToken"))
+            assertTrue(state.value.hasConsent("analytics"))
+        }
+
+    @Test
+    fun aSuppliedSubjectWithoutATokenIsNeverLookedUpAndTheLocalCopyStands() =
+        runTest(dispatcher) {
+            store.saveConsent(mapOf("necessary" to true, "analytics" to true))
+
+            engine(config(subjectId = "user-42")).initialize()
+
+            assertTrue(http.requests.none { it.url.contains("/api/public/consent/") })
+            assertTrue(state.value.hasConsent("analytics"))
+            assertFalse(state.value.isSheetVisible)
+        }
+
+    @Test
+    fun aGeneratedSubjectIsStillLookedUpWithoutAToken() =
+        runTest(dispatcher) {
+            http.onConsentLookup(Fixtures.NO_CONSENT)
+
+            engine(config().copy(identityToken = "v2.1.sig")).initialize()
+
+            val restore = http.requests.single { it.url.contains("/api/public/consent/") }
+            assertEquals("GET", restore.method)
         }
 
     @Test
