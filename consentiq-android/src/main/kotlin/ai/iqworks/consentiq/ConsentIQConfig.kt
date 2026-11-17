@@ -19,7 +19,18 @@ public data class ConsentIQConfig(
     val onSave: ((SaveInfo) -> Unit)? = null,
     val onClose: (() -> Unit)? = null,
     val onError: ((ErrorInfo) -> Unit)? = null,
-)
+) {
+    init {
+        subjectId?.let(::requireValidSubjectId)
+    }
+}
+
+internal const val SITE_SUBJECT_SOURCE = "site"
+
+// ConsentIQ refuses a subject id containing ':', which would let it pose as an id of another kind.
+internal fun requireValidSubjectId(subjectId: String) {
+    require(':' !in subjectId) { "ConsentIQ subjectId may not contain ':'" }
+}
 
 public data class ConsentIQState(
     val consent: Map<String, Boolean> = DEFAULT_CONSENT,

@@ -355,6 +355,38 @@ class ConsentIQEngineTest {
         }
 
     @Test
+    fun anAppChosenSubjectIsMarkedSiteAndAGeneratedOneIsNot() =
+        runTest(dispatcher) {
+            http.onConsentLookup(Fixtures.NO_CONSENT)
+            http.on("POST", "/api/public/consent", body = Fixtures.SUBMIT_OK)
+            engine(config = config(subjectId = "user-42")).apply { initialize() }.acceptAll()
+            engine(config = config()).apply { initialize() }.acceptAll()
+
+            val (site, generated) = http.posts()
+            assertEquals("site", site.getString("subjectSource"))
+            assertFalse(generated.has("subjectSource"))
+        }
+
+    @Test
+    fun aSubjectIdWithAColonIsRefusedAtOnce() {
+        val error = runCatching { config(subjectId = "site:user-42") }.exceptionOrNull()
+        assertTrue(error is IllegalArgumentException)
+        assertTrue(error!!.message!!.contains("may not contain ':'"))
+    }
+
+    @Test
+    fun aResentDecisionKeepsTheSiteMark() =
+        runTest(dispatcher) {
+            refuse(429)
+            engine(launchConfig().copy(subjectId = "user-a")).apply { initialize() }.acceptAll()
+
+            accept()
+            engine(launchConfig().copy(subjectId = "user-a")).initialize()
+
+            assertEquals(listOf("site", "site"), http.posts().map { it.getString("subjectSource") })
+        }
+
+    @Test
     fun aTooManyRequestsAnswerKeepsTheDecisionAndTheNextLaunchSendsItWithoutACaptcha() =
         runTest(dispatcher) {
             http.onConsentLookup(Fixtures.NO_CONSENT)

@@ -29,6 +29,7 @@ public class FormConsent internal constructor(
     attestation: AppAttestation? = null,
 ) {
     init {
+        requireValidSubjectId(subjectId)
         if (attestation != null) api.attestation = attestation
     }
 
@@ -102,6 +103,7 @@ public class FormConsent internal constructor(
                             consentMethod = "form",
                             captchaToken = token,
                             identityToken = identityToken,
+                            subjectSource = SITE_SUBJECT_SOURCE,
                         ),
                     )
                 } ?: return null

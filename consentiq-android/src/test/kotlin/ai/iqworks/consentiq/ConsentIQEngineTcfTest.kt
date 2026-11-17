@@ -56,11 +56,15 @@ class ConsentIQEngineTcfTest {
         http.on("GET", "/api/public/config/${Fixtures.PROPERTY_KEY}", body = Fixtures.configJson(tcf = tcf))
     }
 
-    private fun TestScope.engine(autoShow: Boolean = true): ConsentIQEngine {
+    private fun TestScope.engine(
+        autoShow: Boolean = true,
+        subjectId: String? = null,
+    ): ConsentIQEngine {
         val config =
             ConsentIQConfig(
                 propertyKey = Fixtures.PROPERTY_KEY,
                 apiUrl = "http://stub",
+                subjectId = subjectId,
                 autoShow = autoShow,
                 onConsentChange = { consent, _ -> changes += consent },
                 onOpen = {
@@ -321,9 +325,27 @@ class ConsentIQEngineTcfTest {
                         .removeSuffix(")"),
                 )
             assertEquals(engine.subjectId, options.getString("subjectId"))
+            assertFalse(options.has("subjectSource"))
             assertEquals(Fixtures.TCF_STRING, options.getJSONObject("stored").getString("tcString"))
             assertTrue(options.getJSONObject("consent").getBoolean("analytics"))
             assertFalse(options.getBoolean("reopen"))
+        }
+
+    @Test
+    fun anAppChosenSubjectStartsThePageMarkedSite() =
+        runTest(dispatcher) {
+            answer(pageEvent("current"))
+
+            engine(subjectId = "user-42").initialize()
+
+            val script =
+                host.pages
+                    .single()
+                    .scripts
+                    .single()
+            val options = JSONObject(script.removePrefix("window.consentiqTcfStart(").removeSuffix(")"))
+            assertEquals("user-42", options.getString("subjectId"))
+            assertEquals("site", options.getString("subjectSource"))
         }
 
     @Test

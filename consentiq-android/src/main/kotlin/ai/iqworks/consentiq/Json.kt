@@ -255,5 +255,6 @@ internal fun ConsentSubmission.toJson(propertyKey: String): JSONObject {
     consentVersion?.let { json.put("consentVersion", it) }
     captchaToken?.let { json.put("captchaToken", it) }
     identityToken?.let { json.put("identityToken", it) }
+    subjectSource?.let { json.put("subjectSource", it) }
     return json
 }

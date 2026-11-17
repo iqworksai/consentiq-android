@@ -129,7 +129,7 @@ Every write updates the state first, then posts the consent to ConsentIQ, then p
 | --- | --- | --- |
 | `propertyKey` | required | The property's public key |
 | `apiUrl` | `https://consent.iqworks.ai` | ConsentIQ base URL |
-| `subjectId` | `null` | Supply your own subject id instead of a generated one. It must be random and unguessable, never an account number, email address or phone number: the consent lookup needs only the property key, which ships in your app |
+| `subjectId` | `null` | Supply your own subject id instead of a generated one. It must be random and unguessable, never an account number, email address or phone number: the consent lookup needs only the property key, which ships in your app. It may not contain `:`. The SDK marks it as yours (`subjectSource: "site"`), so ConsentIQ keeps it apart from generated ids |
 | `autoGenerateSubjectId` | `true` | Generate and persist a UUID when no subject id is supplied |
 | `autoShow` | `true` | Show the sheet automatically when no consent is found |
 | `language` | `null` | Force a language; otherwise the property's default language, then `en` |

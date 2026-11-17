@@ -225,7 +225,7 @@ internal class ConsentIQEngine(
     ) {
         val session =
             TcfSession(tcfHost, tcfKeys, store, tcfPageUrl(api.baseUrl, config.propertyKey), tcfReadyTimeoutMs, tcfAnswerTimeoutMs)
-        when (val outcome = session.run(subjectId, reopen) { config.onOpen?.invoke() }) {
+        when (val outcome = session.run(subjectId, reopen, siteSubject = subjectSource != null) { config.onOpen?.invoke() }) {
             TcfOutcome.Current -> Unit
             TcfOutcome.Closed -> config.onClose?.invoke()
             is TcfOutcome.Decided -> applyTcfConsent(outcome.consent, outcome.scope)
@@ -335,6 +335,10 @@ internal class ConsentIQEngine(
         config.subjectId?.takeIf { it.isNotBlank() }
             ?: if (config.autoGenerateSubjectId) store.getOrCreateSubjectId() else ""
 
+    // The app's own subject id, rather than one this SDK generated.
+    private val subjectSource: String?
+        get() = if (!config.subjectId.isNullOrBlank() && subjectId == config.subjectId) SITE_SUBJECT_SOURCE else null
+
     private suspend fun submit(
         cookie: Map<String, Boolean>,
         marketing: Map<String, Boolean>,
@@ -363,6 +367,7 @@ internal class ConsentIQEngine(
                         consentMethod = "sdk",
                         captchaToken = token,
                         identityToken = config.identityToken,
+                        subjectSource = subjectSource,
                     ),
                 )
             } ?: return
@@ -426,6 +431,7 @@ internal class ConsentIQEngine(
                     marketingConsents = pending.marketingConsents,
                     consentMethod = "sdk",
                     identityToken = config.identityToken,
+                    subjectSource = subjectSource,
                 ),
             )
         } catch (e: CancellationException) {

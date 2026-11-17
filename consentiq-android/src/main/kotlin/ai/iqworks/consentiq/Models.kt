@@ -173,6 +173,8 @@ public data class ConsentSubmission(
     val consentVersion: String? = null,
     val captchaToken: String? = null,
     val identityToken: String? = null,
+    // "site" for a subject id the app chose, so the server keeps it apart from SDK-generated ids.
+    val subjectSource: String? = null,
 )
 
 public data class SubmitResult(

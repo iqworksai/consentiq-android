@@ -154,6 +154,19 @@ class TcfTest {
         assertFalse(options.getJSONObject("consent").getBoolean("analytics"))
         assertTrue(options.getBoolean("reopen"))
         assertEquals("run-1", options.getString("token"))
+        assertFalse(options.has("subjectSource"))
+        val site =
+            JSONObject(
+                tcfStartScript(
+                    "user-42",
+                    null,
+                    null,
+                    false,
+                    "run-2",
+                    siteSubject = true,
+                ).removePrefix("window.consentiqTcfStart(").removeSuffix(")"),
+            )
+        assertEquals("site", site.getString("subjectSource"))
 
         val first =
             JSONObject(

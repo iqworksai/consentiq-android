@@ -155,6 +155,7 @@ internal fun tcfStartScript(
     consent: Map<String, Boolean>?,
     reopen: Boolean,
     token: String,
+    siteSubject: Boolean = false,
 ): String {
     val options =
         JSONObject()
@@ -163,6 +164,7 @@ internal fun tcfStartScript(
             .put("consent", consent?.toJson() ?: JSONObject.NULL)
             .put("reopen", reopen)
             .put("token", token)
+    if (siteSubject) options.put("subjectSource", SITE_SUBJECT_SOURCE)
     return "window.consentiqTcfStart($options)"
 }
 

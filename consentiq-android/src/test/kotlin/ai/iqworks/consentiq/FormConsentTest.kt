@@ -52,6 +52,12 @@ class FormConsentTest {
     private fun configRequests() = http.requests.count { it.method == "GET" && it.url.endsWith(configPath) }
 
     @Test
+    fun aSubjectIdWithAColonIsRefusedAtOnce() {
+        val error = runCatching { form(subjectId = "site:user-1") }.exceptionOrNull()
+        assertTrue(error is IllegalArgumentException)
+    }
+
+    @Test
     fun defaultsToTheFourChannelsOff() {
         assertEquals(
             mapOf("email" to false, "sms" to false, "whatsapp" to false, "push" to false),
@@ -89,6 +95,7 @@ class FormConsentTest {
             val body = http.posts().single()
             assertEquals(Fixtures.PROPERTY_KEY, body.getString("propertyKey"))
             assertEquals("user-1", body.getString("subjectId"))
+            assertEquals("site", body.getString("subjectSource"))
             assertEquals("user", body.getString("subjectType"))
             assertEquals("form", body.getString("consentMethod"))
             assertFalse(body.has("cookieConsents"))
