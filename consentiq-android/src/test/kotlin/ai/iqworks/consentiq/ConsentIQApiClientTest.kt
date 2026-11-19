@@ -92,7 +92,23 @@ class ConsentIQApiClientTest {
 
             assertNull(config.banner.noticeUrl)
             assertNull(config.banner.primaryColor)
+            assertNull(config.banner.bannerBgColor)
+            assertNull(config.banner.bannerTextColor)
             assertNull(config.resolvedRegulation)
+        }
+
+    @Test
+    fun bannerColorsAreParsedTolerantly() =
+        runTest {
+            route(
+                "/api/public/config/${Fixtures.PROPERTY_KEY}",
+                body = Fixtures.configJson(bannerColors = """"bannerBgColor": "#111827", "bannerTextColor": null,"""),
+            )
+
+            val banner = client().getConfig().banner
+
+            assertEquals("#111827", banner.bannerBgColor)
+            assertNull(banner.bannerTextColor)
         }
 
     @Test
@@ -134,6 +150,20 @@ class ConsentIQApiClientTest {
             assertNull(consent.expiresAt)
             assertNull(consent.consentVersion)
             assertEquals("DPDPA", consent.regulationApplied)
+        }
+
+    @Test
+    fun getConsentWithAnIdentityTokenPostsItAndEncodesTheId() =
+        runTest {
+            route("/api/public/consent/${Fixtures.PROPERTY_KEY}/user%2042", body = Fixtures.savedConsentJson())
+
+            val lookup = client().getConsent("user 42", identityToken = "v2.1.sig")
+
+            val request = received.single()
+            assertEquals("POST", request.method)
+            assertEquals("/api/public/consent/${Fixtures.PROPERTY_KEY}/user%2042", request.path)
+            assertEquals("v2.1.sig", JSONObject(request.body).getString("identityToken"))
+            assertNotNull(lookup.consent)
         }
 
     @Test
@@ -185,6 +215,7 @@ class ConsentIQApiClientTest {
             assertTrue(body.getJSONObject("marketingConsents").getBoolean("email"))
             assertFalse(body.has("subjectType"))
             assertFalse(body.has("consentVersion"))
+            assertFalse(body.has("captchaToken"))
             assertTrue(result.success)
             assertEquals("c-123", result.consentId)
             assertEquals("abc", result.proofHash)

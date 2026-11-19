@@ -57,6 +57,9 @@ internal fun parsePropertyConfig(json: JSONObject): PropertyConfig {
                 cookieIconUrl = banner.stringOrNull("cookieIconUrl"),
                 overlay = banner.optBoolean("overlay", false),
                 noticeUrl = banner.stringOrNull("noticeUrl"),
+                bannerBgColor = banner.stringOrNull("bannerBgColor"),
+                bannerTextColor = banner.stringOrNull("bannerTextColor"),
+                noticeVersion = banner.intOrNull("noticeVersion"),
             ),
         categories =
             json.arrayOrEmpty("categories").objects().map {
@@ -118,8 +121,33 @@ internal fun parsePropertyConfig(json: JSONObject): PropertyConfig {
         translations = parseTranslations(json.objectOrNull("translations")),
         labels = parseLabels(json.objectOrNull("labels")),
         rtl = json.arrayOrEmpty("rtl").strings(),
+        tcf = json.objectOrNull("tcf")?.let(::parseTcfSettings),
     )
 }
+
+internal fun JSONArray.ints(): List<Int> = (0 until length()).mapNotNull { (opt(it) as? Number)?.toInt() }
+
+// gdprApplies defaults to true: the hosted page re-reads the config and answers not-applicable itself.
+private fun parseTcfSettings(json: JSONObject): TcfSettings =
+    TcfSettings(
+        enabled = json.optBoolean("enabled", false),
+        gdprApplies = json.optBoolean("gdprApplies", true),
+        vendorIds = json.arrayOrEmpty("vendorIds").ints(),
+        publisherCountryCode = json.stringOrNull("publisherCountryCode"),
+        publisherRestrictions =
+            json.arrayOrEmpty("publisherRestrictions").objects().map {
+                TcfPublisherRestriction(
+                    purposeId = it.optInt("purposeId"),
+                    restrictionType = it.optInt("restrictionType"),
+                    vendorIds = it.arrayOrEmpty("vendorIds").ints(),
+                )
+            },
+        repromptMonths = json.intOrNull("repromptMonths"),
+        tcfPolicyVersion = json.intOrNull("tcfPolicyVersion"),
+        cmpId = json.intOrNull("cmpId") ?: 0,
+        cmpVersion = json.intOrNull("cmpVersion"),
+        vendorListUrl = json.stringOrNull("vendorListUrl"),
+    )
 
 private fun stringMap(json: JSONObject?): Map<String, String> {
     if (json == null) return emptyMap()
@@ -226,5 +254,9 @@ internal fun ConsentSubmission.toJson(propertyKey: String): JSONObject {
     geoSource?.let { json.put("geoSource", it) }
     json.put("consentMethod", consentMethod)
     consentVersion?.let { json.put("consentVersion", it) }
+    captchaToken?.let { json.put("captchaToken", it) }
+    identityToken?.let { json.put("identityToken", it) }
+    subjectSource?.let { json.put("subjectSource", it) }
+    noticeVersion?.let { json.put("noticeVersion", it) }
     return json
 }

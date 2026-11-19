@@ -4,7 +4,7 @@ The Android SDK for [ConsentIQ](https://consent.iqworks.ai), the IQWorks consent
 
 Two artifacts are published to Maven Central:
 
-- `ai.iqworks:consentiq-android`: the client, models, storage and state machine. Depends only on `kotlinx-coroutines-android`.
+- `ai.iqworks:consentiq-android`: the client, models, storage and state machine. Depends on `kotlinx-coroutines-android` and `androidx.webkit`.
 - `ai.iqworks:consentiq-android-compose`: a Jetpack Compose `ConsentSheet` and `ConsentGate` on top of the core. Pulls the core in transitively.
 
 Requirements: minSdk 24, Kotlin 2.x, Jetpack Compose with Material 3 for the Compose module.
@@ -15,7 +15,7 @@ With Compose (recommended):
 
 ```kotlin
 dependencies {
-    implementation("ai.iqworks:consentiq-android-compose:1.0.0")
+    implementation("ai.iqworks:consentiq-android-compose:1.1.0")
 }
 ```
 
@@ -23,7 +23,7 @@ Core only, if you render your own consent UI:
 
 ```kotlin
 dependencies {
-    implementation("ai.iqworks:consentiq-android:1.0.0")
+    implementation("ai.iqworks:consentiq-android:1.1.0")
 }
 ```
 
@@ -98,6 +98,7 @@ State is exposed as `ConsentIQ.state: StateFlow<ConsentIQState>` with these fiel
 | `isSheetVisible` | Whether the consent sheet should be shown |
 | `language` | The language used for the sheet |
 | `regulation` | The regulation the server resolved for this visitor, for example `DPDPA`, `GDPR` or `null` |
+| `isTcfActive` | `true` when the IAB TCF screens replace the sheet for this visitor. See [IAB TCF](#iab-tcf) |
 
 Operations:
 
@@ -111,27 +112,32 @@ Operations:
 | `savePreferences(map)` | Records a custom selection from the sheet's category list |
 | `updateConsent(partial)` | Merges changes into the consent map and records them |
 | `updateMarketingConsent(partial)` | Merges changes into the marketing map and records them |
-| `showSheet()` | Opens the sheet and fires `onOpen` |
+| `showSheet()` | Opens the sheet and fires `onOpen`. When TCF is active, opens the TCF screens instead |
+| `showTcfPreferences()` | Re-opens the TCF screens. Returns `false`, and does nothing, when TCF is not active |
 | `hideSheet()` | Closes the sheet from your code. Fires nothing |
 | `dismissSheet()` | Closes the sheet on behalf of the visitor (back button, swipe). Fires `onClose` |
-| `resetConsent()` | Clears the consent map, the cache and the subject id, then generates a fresh subject id |
+| `resetConsent()` | Clears the consent map, the cache, any decision waiting to be resent and the subject id, then generates a fresh subject id |
 | `subjectId` | The subject id in use, or `null` before initialization |
 
 `acceptAll`, `rejectAll`, `savePreferences`, `updateConsent` and `updateMarketingConsent` are `suspend` functions. Each has a fire-and-forget twin with an `Async` suffix (`acceptAllAsync()` and so on) that launches on the main thread and returns the `Job`.
 
-Every write updates the state first, then posts the consent to ConsentIQ, then persists the local cache, then calls `onConsentChange`. A failed request is logged and the local state is kept.
+Every write updates the state and the local cache first, then posts the consent to ConsentIQ, and calls `onConsentChange` once it is recorded. The local cache belongs to the subject id it was written for; another subject never inherits it. When the post gets no answer, a `5xx`, `429 Too many requests` or a challenge left unanswered, the decision is kept and sent once more on each of the next launches, without a captcha, until it is recorded, three attempts have been made, seven days have passed, or the banner's notice or categories changed. It carries the notice version it was made under. A `400`, `403`, `404`, `409` or `422` answer, or any failure on a property that requires a captcha on every submit, is final: the decision and its local cache are dropped, `onError` fires with code `consent_refused`, and the next launch asks again with nothing granted rather than restoring an older choice. A decision is resent only for the same subject id, property and API URL, a newer decision replaces it, and a newer record on ConsentIQ for that person wins over it. A restore refused with `403` drops the local cache too, fires `onError` and shows the sheet.
 
 `ConsentIQConfig` fields:
 
 | Field | Default | Meaning |
 | --- | --- | --- |
 | `propertyKey` | required | The property's public key |
-| `apiUrl` | `https://consent.iqworks.ai` | Override for self-hosted or test environments |
-| `subjectId` | `null` | Supply your own subject id instead of a generated one |
+| `apiUrl` | `https://consent.iqworks.ai` | ConsentIQ base URL |
+| `subjectId` | `null` | Supply your own subject id instead of a generated one. It must be random and unguessable, never an account number, email address or phone number: the consent lookup needs only the property key, which ships in your app. It may not contain `:`; such an id fires `onError` with code `invalid_subject_id`, and the SDK keeps consent local. The SDK marks it as yours (`subjectSource: "site"`), so ConsentIQ keeps it apart from generated ids. Its stored consent is restored only with `identityToken`; without one the SDK relies on the copy on the device |
 | `autoGenerateSubjectId` | `true` | Generate and persist a UUID when no subject id is supplied |
 | `autoShow` | `true` | Show the sheet automatically when no consent is found |
 | `language` | `null` | Force a language; otherwise the property's default language, then `en` |
-| `debug` | `false` | Log request details to Logcat under the `ConsentIQ` tag |
+| `debug` | `false` | Log request details to Logcat under the `ConsentIQ` tag. Turn it on in debug builds only |
+| `playIntegrityCloudProjectNumber` | `null` | Only for an app also distributed outside Google Play: the Google Cloud project number linked to it. A Play app needs none, see Limitations |
+| `identityToken` | `null` | Your server's signature for this person, sent with every submit for the `subjectId` you supply (never with a generated id, which it cannot match). ConsentIQ verifies it and marks the record verified by your organization. Sign on your server, never in the app. `FormConsent` takes the same parameter, plus `identityFor`: the identifier it was signed for. When the subject id is that identifier written differently (an email's case, a phone's spacing) the signed form is sent, and any other subject goes unsigned |
+
+With `autoShow = false` and TCF active, the TCF screens also wait for `showSheet()`. `IABTCF_gdprApplies` is still written at start-up; whether a stored TC string is out of date is checked when the screens next open.
 
 Marketing forms: `FormConsent` mirrors the marketing form helper in the web SDKs. It holds a map of channels (default `email`, `sms`, `whatsapp`, `push`), exposes `toggleChannel`, `setChannel`, `reset` and a `suspend fun submit()` that posts the selection with `subjectType = "user"` and `consentMethod = "form"`.
 
@@ -149,18 +155,37 @@ All callbacks are optional fields on `ConsentIQConfig` and run on the thread tha
 | `onReject(RejectInfo)` | The visitor rejected all optional categories |
 | `onSave(SaveInfo)` | The visitor saved a custom selection |
 | `onClose()` | The visitor backed out without answering. Never fires on accept, reject, save or `hideSheet()` |
+| `onError(ErrorInfo)` | Something the SDK could not do, with a stable `code` and a `message`. The TCF screens report `tcf-unsupported`, `tcf-unavailable`, `tcf-timeout`, `tcf-load-failed` and `tcf-page-error`; a decision ConsentIQ refused for good (`400`, `403`, `404`, `409`, `422`, or any failure under Require CAPTCHA) or a restore refused with `403` reports `consent_refused` with the server's message; a supplied subject id containing `:` reports `invalid_subject_id` |
+
+## IAB TCF
+
+When TCF is on for the property in the ConsentIQ dashboard, the SDK acts as the app's IAB TCF CMP:
+
+- At start-up it writes `IABTCF_CmpSdkID` and `IABTCF_CmpSdkVersion` to the app's default `SharedPreferences` (`<package>_preferences`, the file `PreferenceManager.getDefaultSharedPreferences` returns), where vendor SDKs read them.
+- Where GDPR does not apply to the visitor, it writes `IABTCF_gdprApplies = 0` and the category sheet runs as usual.
+- Otherwise ConsentIQ's TCF screens replace the sheet. The SDK loads them in a hidden web view from your `apiUrl` and shows them full-screen only when the visitor has to answer: first launch, a changed vendor list or policy version, or the re-prompt period running out. On a decision it writes every `IABTCF_*` key (numbers as `Int`, strings as `String`), removes `IABTCF_PublisherRestrictions{1..11}` keys the decision no longer has, and applies the category choices to `state` and the callbacks. The screens record the consent with ConsentIQ themselves, so the SDK does not submit it again.
+- System back is ignored on a first prompt and closes re-opened screens. If the visitor had tapped the screens, the SDK hides them and waits up to 10 seconds for a choice already on its way before giving up.
+- An open requested while the screens are already running is kept and runs as soon as they finish.
+- `resetConsent()`, and consent the server reports as expired, remove the decision's `IABTCF_*` keys (all but `IABTCF_CmpSdkID`, `IABTCF_CmpSdkVersion` and `IABTCF_gdprApplies`), so the next start asks again. If TCF is turned off for the property, the next start removes every `IABTCF_*` key the SDK wrote. Keys written by another CMP are never touched.
+- Vendor privacy links open in the system browser.
+- If the screens cannot run on the device (no WebView, or a WebView without the web message listener feature), no `IABTCF_*` key is written, `onError` fires and the category sheet takes over for the session.
+- A load failure or timeout fires `onError` and shows the category sheet; the next `showSheet()` tries the TCF screens again. A choice made on the category sheet meanwhile removes the old decision's `IABTCF_*` keys.
+
+Give your settings screen a "Privacy choices" entry that calls `ConsentIQ.showSheet()`; it opens whichever of the two applies.
 
 ## Sheet behavior
 
 - Title, button labels and category copy come from the property configuration in the visitor's language, so wording changes in the dashboard reach the app without an SDK update.
 - The primary button is tinted with the banner's brand color, falling back to `#f97316`.
+- The sheet takes the banner's background and text colors from the dashboard when the server sends them, with secondary text and dividers matched to a light or dark background. Without them, it follows your app's Material theme.
 - Right-to-left languages (Arabic, Urdu, Kashmiri, Sindhi) lay the sheet out right-to-left.
 - The "view notice" link opens the cookie notice in the system browser with the current language appended as `lang`.
 - The back button and a swipe down call `dismissSheet()`.
 
 ## Limitations
 
-- Captcha. If "Require captcha" is turned on for the property, every consent submission from this SDK is refused with HTTP 400, because Cloudflare Turnstile has no native Android SDK. The SDK logs `[ConsentIQ] This property requires a captcha, which mobile SDKs cannot satisfy. Turn off "Require captcha" for this property in the ConsentIQ dashboard.` once at startup. Turn the setting off for mobile properties.
+- Play Integrity. Each submit carries a Play Integrity token from a classic request, whose nonce is the SHA-256 of the exact request body, so ConsentIQ can tell your app, installed from Google Play on a genuine device, from a script. To turn the check on, in Play Console (App integrity) choose to manage and download your own response encryption keys for classic requests, then enter the decryption and verification keys with your package name and signing certificate digest in the property's settings. ConsentIQ verifies tokens with those keys and never calls Google. Classic requests have a daily quota (10,000 a day by default; you can ask Google for more in Play Console). On devices without Google Play services, once the quota is spent, or when the check fails, nothing is sent and ConsentIQ asks for the captcha below instead.
+- Captcha. When "Require CAPTCHA" is on for the property, the SDK runs Cloudflare Turnstile in a web view, loaded from `consent.iqworks.ai` (your `apiUrl`) and `challenges.cloudflare.com`, before each submit. ConsentIQ may also ask for a captcha on any property when a submit looks automated; the SDK then solves one and submits once more. The check runs invisibly; if it has not finished within a few seconds it is shown in a dialog with a Cancel button, so a visitor Cloudflare wants to click can do so. If the check fails, times out or is cancelled, nothing more is sent, the local state is kept, and the SDK logs `[ConsentIQ] Captcha check failed; consent not submitted`. `FormConsent` uses the web view that `ConsentIQ.init` sets up, so call `init` first. List Cloudflare Turnstile in your app's privacy disclosures.
 - Regulation detection uses the server's view of the device's IP address. There is no client-side override.
 - The SDK does not block third-party SDKs on its own. Read `hasConsent` before starting them.
 

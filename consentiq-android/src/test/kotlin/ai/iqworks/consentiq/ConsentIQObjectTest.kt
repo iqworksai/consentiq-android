@@ -11,6 +11,7 @@ import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -89,6 +90,74 @@ class ConsentIQObjectTest {
             advanceUntilIdle()
             assertTrue(ConsentIQ.hasMarketingConsent("email"))
             assertEquals(2, http.posts().size)
+        }
+
+    @Test
+    fun injectedCaptchaProviderSignsSubmitsAndTheLoadedConfigIsShared() =
+        runTest(dispatcher) {
+            http.on("GET", "/api/public/config/${Fixtures.PROPERTY_KEY}", body = Fixtures.configJson(requireCaptcha = true))
+            val captcha = FakeCaptchaProvider { "tok" }
+            ConsentIQ.initWith(config.copy(language = "hi"), store, api(), logger, captcha)
+            advanceUntilIdle()
+
+            ConsentIQ.acceptAllAsync()
+            advanceUntilIdle()
+
+            assertEquals("tok", http.posts().single().getString("captchaToken"))
+            assertEquals(1, captcha.calls)
+            assertTrue(ConsentIQ.loadedConfigFor(Fixtures.PROPERTY_KEY, "http://stub")!!.requireCaptcha)
+            assertNull(ConsentIQ.loadedConfigFor("pk_other", "http://stub"))
+        }
+
+    @Test
+    fun captchaIsUnavailableBeforeInitGivesAContext() {
+        assertSame(CaptchaTokenProvider.UNAVAILABLE, ConsentIQ.captchaProviderFor("http://stub", Fixtures.PROPERTY_KEY))
+    }
+
+    @Test
+    fun showSheetAndShowTcfPreferencesReopenTheTcfPageWhenTcfIsActive() =
+        runTest(dispatcher) {
+            http.on("GET", "/api/public/config/${Fixtures.PROPERTY_KEY}", body = Fixtures.configJson(tcf = Fixtures.tcfJson()))
+            val host = FakeTcfHost(onStart = { it.send(pageEvent("current")) })
+            store.saveTcf("""{"tcString":"${Fixtures.TCF_STRING}","vendorIds":[1],"restrictionsKey":"[]"}""")
+            ConsentIQ.initWith(
+                config.copy(language = "de"),
+                store,
+                api(),
+                logger,
+                tcfHost = host,
+                tcfKeys = TcfKeyStore(FakeSharedPreferences()),
+            )
+            advanceUntilIdle()
+
+            assertTrue(ConsentIQ.isTcfActive)
+            assertFalse(ConsentIQ.state.value.isSheetVisible)
+
+            host.onStart = { it.send(pageEvent("show")) }
+            ConsentIQ.showSheet()
+            advanceUntilIdle()
+            assertEquals(listOf(false, true), host.opened.map { it.second })
+            assertFalse(ConsentIQ.state.value.isSheetVisible)
+
+            assertTrue(ConsentIQ.showTcfPreferences())
+            advanceUntilIdle()
+            assertEquals(2, host.opened.size)
+
+            host.onStart = { it.send(pageEvent("closed")) }
+            host.pages.last().send(pageEvent("closed"))
+            advanceUntilIdle()
+            assertEquals(listOf(false, true, true), host.opened.map { it.second })
+            assertTrue(host.pages.all { it.released == 1 })
+        }
+
+    @Test
+    fun showTcfPreferencesIsFalseWithoutTcf() =
+        runTest(dispatcher) {
+            ConsentIQ.initWith(config.copy(language = "fr"), store, api(), logger)
+            advanceUntilIdle()
+
+            assertFalse(ConsentIQ.isTcfActive)
+            assertFalse(ConsentIQ.showTcfPreferences())
         }
 
     @Test

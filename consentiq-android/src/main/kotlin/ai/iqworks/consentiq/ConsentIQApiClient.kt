@@ -4,6 +4,7 @@ import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
+import java.net.URLEncoder
 
 public class ConsentIQApiClient(
     private val propertyKey: String,
@@ -14,19 +15,33 @@ public class ConsentIQApiClient(
 ) {
     public val baseUrl: String = baseUrl.trimEnd('/')
 
+    // Signs each submission so ConsentIQ knows it came from this app; null sends nothing.
+    internal var attestation: AppAttestation? = null
+
     public suspend fun getConfig(): PropertyConfig {
         logger.debug("[ConsentIQ] Fetching config for property $propertyKey")
         return parsePropertyConfig(request("GET", "$baseUrl/api/public/config/$propertyKey"))
     }
 
-    public suspend fun getConsent(subjectId: String): ConsentLookup {
-        logger.debug("[ConsentIQ] Fetching consent for subject $subjectId")
-        return parseConsentLookup(request("GET", "$baseUrl/api/public/consent/$propertyKey/$subjectId"))
+    /**
+     * The stored consent for [subjectId]. An id the app chose is read with its [identityToken], from the
+     * records ConsentIQ verified; an id this SDK generated is read without one.
+     */
+    public suspend fun getConsent(
+        subjectId: String,
+        identityToken: String? = null,
+    ): ConsentLookup {
+        logger.debug("[ConsentIQ] Fetching consent")
+        val url = "$baseUrl/api/public/consent/$propertyKey/${encodePathSegment(subjectId)}"
+        if (identityToken == null) return parseConsentLookup(request("GET", url))
+        return parseConsentLookup(request("POST", url, JSONObject().put("identityToken", identityToken).toString()))
     }
 
     public suspend fun submitConsent(submission: ConsentSubmission): SubmitResult {
-        logger.debug("[ConsentIQ] Submitting consent for subject ${submission.subjectId}")
-        return parseSubmitResult(request("POST", "$baseUrl/api/public/consent", submission.toJson(propertyKey)))
+        logger.debug("[ConsentIQ] Submitting consent via ${submission.consentMethod}")
+        val body = submission.toJson(propertyKey).toString()
+        val headers = attestation?.headers(body).orEmpty()
+        return parseSubmitResult(request("POST", "$baseUrl/api/public/consent", body, headers))
     }
 
     public suspend fun verifyConsent(consentId: String): VerifyResult =
@@ -35,11 +50,12 @@ public class ConsentIQApiClient(
     private suspend fun request(
         method: String,
         url: String,
-        body: JSONObject? = null,
+        body: String? = null,
+        headers: Map<String, String> = emptyMap(),
     ): JSONObject {
         val response =
             withContext(ioDispatcher) {
-                http.execute(HttpRequest(method = method, url = url, body = body?.toString()))
+                http.execute(HttpRequest(method = method, url = url, body = body, headers = headers))
             }
         if (response.status !in 200..299) {
             val message = runCatching { JSONObject(response.body).stringOrNull("error") }.getOrNull()
@@ -52,3 +68,5 @@ public class ConsentIQApiClient(
         }
     }
 }
+
+internal fun encodePathSegment(value: String): String = URLEncoder.encode(value, "UTF-8").replace("+", "%20")

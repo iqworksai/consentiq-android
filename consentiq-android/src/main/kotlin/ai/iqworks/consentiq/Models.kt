@@ -27,6 +27,7 @@ public data class PropertyConfig(
     val translations: Map<String, TranslationSet>,
     val labels: Map<String, BannerLabels>,
     val rtl: List<String>,
+    val tcf: TcfSettings? = null,
 ) {
     public fun labelsFor(language: String): BannerLabels? = labels[language] ?: labels[baseTag(language)] ?: labels["en"]
 
@@ -59,6 +60,10 @@ public data class BannerConfig(
     val cookieIconUrl: String?,
     val overlay: Boolean,
     val noticeUrl: String?,
+    val bannerBgColor: String? = null,
+    val bannerTextColor: String? = null,
+    // The version of the notice the banner links, which a resent decision carries.
+    val noticeVersion: Int? = null,
 )
 
 public data class CategoryInfo(
@@ -124,6 +129,25 @@ public data class BannerLabels(
     val viewNotice: String,
 )
 
+public data class TcfSettings(
+    val enabled: Boolean,
+    val gdprApplies: Boolean,
+    val vendorIds: List<Int>,
+    val publisherCountryCode: String?,
+    val publisherRestrictions: List<TcfPublisherRestriction>,
+    val repromptMonths: Int?,
+    val tcfPolicyVersion: Int?,
+    val cmpId: Int,
+    val cmpVersion: Int?,
+    val vendorListUrl: String?,
+)
+
+public data class TcfPublisherRestriction(
+    val purposeId: Int,
+    val restrictionType: Int,
+    val vendorIds: List<Int>,
+)
+
 public data class SavedConsent(
     val id: String,
     val cookieConsents: Map<String, Boolean>,
@@ -149,6 +173,12 @@ public data class ConsentSubmission(
     val geoSource: String? = null,
     val consentMethod: String = "sdk",
     val consentVersion: String? = null,
+    val captchaToken: String? = null,
+    val identityToken: String? = null,
+    // "site" for a subject id the app chose, so the server keeps it apart from SDK-generated ids.
+    val subjectSource: String? = null,
+    // The notice version a resent decision was made under; ConsentIQ refuses it once the notice changed.
+    val noticeVersion: Int? = null,
 )
 
 public data class SubmitResult(
@@ -184,6 +214,11 @@ public data class RejectInfo(
 
 public data class SaveInfo(
     val consent: Map<String, Boolean>,
+)
+
+public data class ErrorInfo(
+    val code: String,
+    val message: String?,
 )
 
 public class ConsentIQException(

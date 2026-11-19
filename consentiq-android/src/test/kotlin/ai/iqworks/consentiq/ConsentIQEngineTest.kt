@@ -66,7 +66,11 @@ class ConsentIQEngineTest {
         onClose = { closes += Unit },
     )
 
-    private fun TestScope.engine(config: ConsentIQConfig = config()): ConsentIQEngine {
+    private fun TestScope.engine(
+        config: ConsentIQConfig = config(),
+        captcha: CaptchaTokenProvider = CaptchaTokenProvider.UNAVAILABLE,
+        now: () -> Long = System::currentTimeMillis,
+    ): ConsentIQEngine {
         val api =
             ConsentIQApiClient(
                 propertyKey = Fixtures.PROPERTY_KEY,
@@ -74,8 +78,19 @@ class ConsentIQEngineTest {
                 http = http,
                 ioDispatcher = dispatcher,
             )
-        return ConsentIQEngine(config, store, api, logger, state)
+        return ConsentIQEngine(config, store, api, logger, state, captcha, now = now)
     }
+
+    private val errors = mutableListOf<ErrorInfo>()
+
+    private fun refuse(
+        status: Int,
+        error: String = "refused",
+    ) = http.on("POST", "/api/public/consent", status = status, body = """{"error":"$error"}""")
+
+    private fun accept() = http.on("POST", "/api/public/consent", body = Fixtures.SUBMIT_OK)
+
+    private fun launchConfig() = config(autoShow = false).copy(onError = { errors += it })
 
     private fun FakeHttpExecutor.onConsentLookup(body: String) {
         on("GET", "/api/public/consent/${Fixtures.PROPERTY_KEY}/${store.getOrCreateSubjectId()}", body = body)
@@ -143,7 +158,7 @@ class ConsentIQEngineTest {
     @Test
     fun localCacheIsUsedWhenServerHasNothing() =
         runTest(dispatcher) {
-            store.saveConsent(mapOf("necessary" to true, "analytics" to true, "marketing" to false))
+            store.saveConsent(mapOf("necessary" to true, "analytics" to true, "marketing" to false), store.getOrCreateSubjectId())
             http.onConsentLookup(Fixtures.NO_CONSENT)
 
             engine().initialize()
@@ -158,7 +173,7 @@ class ConsentIQEngineTest {
     @Test
     fun localCacheIsUsedWhenConsentLookupFails() =
         runTest(dispatcher) {
-            store.saveConsent(mapOf("necessary" to true, "analytics" to true))
+            store.saveConsent(mapOf("necessary" to true, "analytics" to true), store.getOrCreateSubjectId())
             http.on("GET", "/api/public/consent/${Fixtures.PROPERTY_KEY}/${store.getOrCreateSubjectId()}", status = 500, body = "{}")
 
             engine().initialize()
@@ -218,13 +233,49 @@ class ConsentIQEngineTest {
     @Test
     fun suppliedSubjectIdIsUsedAndNotPersisted() =
         runTest(dispatcher) {
-            http.on("GET", "/api/public/consent/${Fixtures.PROPERTY_KEY}/user-42", body = Fixtures.NO_CONSENT)
             val engine = engine(config(subjectId = "user-42"))
 
             engine.initialize()
 
             assertEquals("user-42", engine.subjectId)
             assertNull(storage.values["consentiq_subject_id"])
+        }
+
+    @Test
+    fun aSuppliedSubjectIsRestoredOnlyWithItsIdentityToken() =
+        runTest(dispatcher) {
+            val path = "/api/public/consent/${Fixtures.PROPERTY_KEY}/user-42"
+            http.on("POST", path, body = Fixtures.savedConsentJson(analytics = true, email = true))
+
+            engine(config(subjectId = "user-42").copy(identityToken = "v2.1.sig")).initialize()
+
+            val restore = http.requests.single { it.url.endsWith(path) }
+            assertEquals("POST", restore.method)
+            assertEquals("v2.1.sig", JSONObject(restore.body!!).getString("identityToken"))
+            assertTrue(state.value.hasConsent("analytics"))
+        }
+
+    @Test
+    fun aSuppliedSubjectWithoutATokenIsNeverLookedUpAndTheLocalCopyStands() =
+        runTest(dispatcher) {
+            store.saveConsent(mapOf("necessary" to true, "analytics" to true), "user-42")
+
+            engine(config(subjectId = "user-42")).initialize()
+
+            assertTrue(http.requests.none { it.url.contains("/api/public/consent/") })
+            assertTrue(state.value.hasConsent("analytics"))
+            assertFalse(state.value.isSheetVisible)
+        }
+
+    @Test
+    fun aGeneratedSubjectIsStillLookedUpWithoutAToken() =
+        runTest(dispatcher) {
+            http.onConsentLookup(Fixtures.NO_CONSENT)
+
+            engine(config().copy(identityToken = "v2.1.sig")).initialize()
+
+            val restore = http.requests.single { it.url.contains("/api/public/consent/") }
+            assertEquals("GET", restore.method)
         }
 
     @Test
@@ -242,32 +293,449 @@ class ConsentIQEngineTest {
         }
 
     @Test
-    fun captchaWarningIsLoggedExactlyOnce() =
+    fun requiredCaptchaSendsAFreshTokenWithEverySubmitAndNoneAtInit() =
         runTest(dispatcher) {
             http.on("GET", "/api/public/config/${Fixtures.PROPERTY_KEY}", body = Fixtures.configJson(requireCaptcha = true))
             http.onConsentLookup(Fixtures.NO_CONSENT)
-            val engine = engine()
+            val captcha = FakeCaptchaProvider { "tok" }
+            val engine = engine(captcha = captcha)
 
             engine.initialize()
-            engine.acceptAll()
-            engine.rejectAll()
+            assertEquals(0, captcha.calls)
 
-            assertEquals(1, logger.warnings.count { it == ConsentIQEngine.CAPTCHA_WARNING })
-            assertEquals(
-                "[ConsentIQ] This property requires a captcha, which mobile SDKs cannot satisfy. " +
-                    "Turn off \"Require captcha\" for this property in the ConsentIQ dashboard.",
-                ConsentIQEngine.CAPTCHA_WARNING,
-            )
+            engine.acceptAll()
+            engine.updateMarketingConsent(mapOf("email" to true))
+
+            val posts = http.posts()
+            assertEquals(2, posts.size)
+            assertTrue(posts.all { it.getString("captchaToken") == "tok" })
+            assertEquals(2, captcha.calls)
+            assertEquals(2, changes.size)
+            assertTrue(logger.warnings.isEmpty())
         }
 
     @Test
-    fun captchaWarningIsNotLoggedWhenNotRequired() =
+    fun captchaFailureSendsNothingKeepsLocalStateAndWarns() =
+        runTest(dispatcher) {
+            http.on("GET", "/api/public/config/${Fixtures.PROPERTY_KEY}", body = Fixtures.configJson(requireCaptcha = true))
+            http.onConsentLookup(Fixtures.NO_CONSENT)
+            val engine = engine(captcha = FakeCaptchaProvider { throw CaptchaException("timeout") })
+            engine.initialize()
+
+            engine.acceptAll()
+
+            assertTrue(http.posts().isEmpty())
+            assertTrue(state.value.hasConsent("analytics"))
+            assertFalse(state.value.isSheetVisible)
+            assertEquals(1, accepts.size)
+            assertTrue(changes.isEmpty())
+            assertNull(store.loadConsent())
+            assertEquals(listOf("[ConsentIQ] Captcha check failed; consent not submitted"), logger.warnings)
+            assertTrue(logger.errors.isEmpty())
+            assertTrue(logger.debugs.none { it.contains(engine.subjectId) })
+        }
+
+    @Test
+    fun aChallengeIsAnsweredOnceAndTheConsentRecorded() =
         runTest(dispatcher) {
             http.onConsentLookup(Fixtures.NO_CONSENT)
+            var posts = 0
+            http.on("POST", "/api/public/consent") {
+                posts++
+                if (posts == 1) HttpResponse(428, """{"error":"captcha_required"}""") else HttpResponse(200, Fixtures.SUBMIT_OK)
+            }
+            val captcha = FakeCaptchaProvider { "tok" }
+            val engine = engine(captcha = captcha)
+            engine.initialize()
 
-            engine().initialize()
+            engine.acceptAll()
 
-            assertTrue(logger.warnings.none { it == ConsentIQEngine.CAPTCHA_WARNING })
+            val sent = http.posts()
+            assertEquals(2, sent.size)
+            assertFalse(sent[0].has("captchaToken"))
+            assertEquals("tok", sent[1].getString("captchaToken"))
+            assertEquals(1, captcha.calls)
+            assertEquals(1, changes.size)
+            assertNotNull(store.loadConsent())
+        }
+
+    @Test
+    fun aCancelledChallengeSendsNothingMoreAndKeepsLocalState() =
+        runTest(dispatcher) {
+            http.onConsentLookup(Fixtures.NO_CONSENT)
+            http.on("POST", "/api/public/consent", status = 428, body = """{"error":"captcha_required"}""")
+            val engine = engine(captcha = FakeCaptchaProvider { throw CaptchaException("cancelled") })
+            engine.initialize()
+
+            engine.acceptAll()
+
+            assertEquals(1, http.posts().size)
+            assertTrue(state.value.hasConsent("analytics"))
+            assertTrue(changes.isEmpty())
+            // A challenge left unanswered may pass later: the decision stands locally and waits to be resent.
+            assertNotNull(store.loadConsent(engine.subjectId))
+            assertNotNull(store.loadPending())
+            assertEquals(listOf("[ConsentIQ] Captcha check failed; consent not submitted"), logger.warnings)
+        }
+
+    @Test
+    fun theIdentityTokenGoesWithEverySubmitForTheAppsOwnSubject() =
+        runTest(dispatcher) {
+            http.on("POST", "/api/public/consent/${Fixtures.PROPERTY_KEY}/user-42", body = Fixtures.NO_CONSENT)
+            http.on("POST", "/api/public/consent", body = Fixtures.SUBMIT_OK)
+            val engine = engine(config = config(subjectId = "user-42").copy(identityToken = "v2.1.sig"))
+            engine.initialize()
+
+            engine.acceptAll()
+            engine.rejectAll()
+
+            // The first post is the token-checked restore; the two after it are the submits.
+            assertEquals(listOf("v2.1.sig", "v2.1.sig"), http.posts().drop(1).map { it.getString("identityToken") })
+        }
+
+    @Test
+    fun theIdentityTokenNeverGoesWithAGeneratedSubject() =
+        runTest(dispatcher) {
+            http.onConsentLookup(Fixtures.NO_CONSENT)
+            val engine = engine(config = config().copy(identityToken = "v2.1.sig"))
+            engine.initialize()
+
+            engine.acceptAll()
+
+            assertFalse(http.posts().single().has("identityToken"))
+        }
+
+    @Test
+    fun aRefusedRestoreDropsTheLocalCopyAsksAgainAndTellsTheApp() =
+        runTest(dispatcher) {
+            store.saveConsent(mapOf("necessary" to true, "analytics" to true), "user-42")
+            http.on(
+                "POST",
+                "/api/public/consent/${Fixtures.PROPERTY_KEY}/user-42",
+                status = 403,
+                body = """{"error":"Identity token did not verify"}""",
+            )
+
+            engine(config(subjectId = "user-42").copy(identityToken = "v2.1.sig", onError = { errors += it })).initialize()
+
+            assertNull(store.loadConsent("user-42"))
+            assertFalse(state.value.hasConsent("analytics"))
+            assertTrue(state.value.isSheetVisible)
+            assertEquals(listOf(ErrorInfo("consent_refused", "Identity token did not verify")), errors)
+        }
+
+    @Test
+    fun anAppChosenSubjectIsMarkedSiteAndAGeneratedOneIsNot() =
+        runTest(dispatcher) {
+            http.onConsentLookup(Fixtures.NO_CONSENT)
+            http.on("POST", "/api/public/consent", body = Fixtures.SUBMIT_OK)
+            engine(config = config(subjectId = "user-42")).apply { initialize() }.acceptAll()
+            engine(config = config()).apply { initialize() }.acceptAll()
+
+            val (site, generated) = http.posts()
+            assertEquals("site", site.getString("subjectSource"))
+            assertFalse(generated.has("subjectSource"))
+        }
+
+    @Test
+    fun aSubjectIdWithAColonIsReportedAndNothingIsSubmitted() =
+        runTest(dispatcher) {
+            val engine = engine(config(subjectId = "site:user-42").copy(onError = { errors += it }))
+            engine.initialize()
+            engine.acceptAll()
+
+            assertEquals("", engine.subjectId)
+            assertTrue(http.posts().isEmpty())
+            assertEquals(listOf(ErrorInfo("invalid_subject_id", "ConsentIQ subjectId may not contain ':'")), errors)
+        }
+
+    @Test
+    fun aResentDecisionKeepsTheSiteMark() =
+        runTest(dispatcher) {
+            refuse(429)
+            engine(launchConfig().copy(subjectId = "user-a")).apply { initialize() }.acceptAll()
+
+            accept()
+            engine(launchConfig().copy(subjectId = "user-a")).initialize()
+
+            assertEquals(listOf("site", "site"), http.posts().map { it.getString("subjectSource") })
+        }
+
+    @Test
+    fun aTooManyRequestsAnswerKeepsTheDecisionAndTheNextLaunchSendsItWithoutACaptcha() =
+        runTest(dispatcher) {
+            http.onConsentLookup(Fixtures.NO_CONSENT)
+            refuse(429, "Too many requests")
+            val captcha = FakeCaptchaProvider { "tok" }
+            engine(launchConfig(), captcha).apply { initialize() }.acceptAll()
+            assertNotNull(store.loadPending())
+            assertTrue(changes.isEmpty())
+
+            accept()
+            engine(launchConfig(), captcha).initialize()
+
+            val posts = http.posts()
+            assertEquals(2, posts.size)
+            assertFalse(posts[1].has("captchaToken"))
+            assertTrue(posts[1].getJSONObject("cookieConsents").getBoolean("analytics"))
+            assertNull(store.loadPending())
+            assertTrue(state.value.hasConsent("analytics"))
+            assertEquals(true, store.loadConsent()?.get("analytics"))
+            assertEquals(1, changes.size)
+            assertEquals(0, captcha.calls)
+        }
+
+    @Test
+    fun theRetryIsQuietOnAChallengeAndStopsAfterThreeLaunches() =
+        runTest(dispatcher) {
+            http.onConsentLookup(Fixtures.NO_CONSENT)
+            refuse(429)
+            val captcha = FakeCaptchaProvider { "tok" }
+            engine(launchConfig(), captcha).apply { initialize() }.acceptAll()
+
+            refuse(428, "captcha_required")
+            repeat(3) { engine(launchConfig(), captcha).initialize() }
+            assertEquals(0, captcha.calls)
+            assertEquals(4, http.posts().size)
+            assertEquals(3, store.loadPending()?.attempts)
+
+            engine(launchConfig(), captcha).initialize()
+            assertEquals(4, http.posts().size)
+            assertNull(store.loadPending())
+        }
+
+    @Test
+    fun aPendingDecisionOlderThanSevenDaysIsDropped() =
+        runTest(dispatcher) {
+            http.onConsentLookup(Fixtures.NO_CONSENT)
+            val start = 1_700_000_000_000L
+            refuse(429)
+            engine(launchConfig(), now = { start }).apply { initialize() }.acceptAll()
+
+            accept()
+            engine(launchConfig(), now = { start + 8L * 24 * 60 * 60 * 1000 }).initialize()
+
+            assertEquals(1, http.posts().size)
+            assertNull(store.loadPending())
+        }
+
+    @Test
+    fun refusalsThatResendingCannotChangeDropTheDecision() =
+        runTest(dispatcher) {
+            http.onConsentLookup(Fixtures.NO_CONSENT)
+            for (status in listOf(400, 404, 409, 422)) {
+                refuse(429)
+                engine(launchConfig()).apply { initialize() }.acceptAll()
+                assertNotNull("$status", store.loadPending())
+
+                refuse(status)
+                engine(launchConfig()).apply { initialize() }.rejectAll()
+
+                assertNull("$status", store.loadPending())
+            }
+        }
+
+    @Test
+    fun aForbiddenAnswerReachesTheAppAndIsNotRetried() =
+        runTest(dispatcher) {
+            http.onConsentLookup(Fixtures.NO_CONSENT)
+            refuse(403, "Identity token did not verify")
+            engine(launchConfig()).apply { initialize() }.acceptAll()
+            engine(launchConfig()).initialize()
+
+            assertEquals(1, http.posts().size)
+            assertEquals(listOf(ErrorInfo("consent_refused", "Identity token did not verify")), errors)
+            assertNull(store.loadPending())
+        }
+
+    @Test
+    fun aForbiddenAnswerToTheRetryReachesTheAppToo() =
+        runTest(dispatcher) {
+            http.onConsentLookup(Fixtures.NO_CONSENT)
+            refuse(429)
+            engine(launchConfig()).apply { initialize() }.acceptAll()
+
+            refuse(403, "Verified identity required")
+            engine(launchConfig()).initialize()
+
+            assertEquals(listOf(ErrorInfo("consent_refused", "Verified identity required")), errors)
+            assertNull(store.loadPending())
+        }
+
+    @Test
+    fun aPropertyThatRequiresACaptchaKeepsNothingToRetry() =
+        runTest(dispatcher) {
+            http.on("GET", "/api/public/config/${Fixtures.PROPERTY_KEY}", body = Fixtures.configJson(requireCaptcha = true))
+            http.onConsentLookup(Fixtures.NO_CONSENT)
+            refuse(429)
+            engine(launchConfig(), FakeCaptchaProvider { "tok" }).apply { initialize() }.acceptAll()
+
+            assertNull(store.loadPending())
+        }
+
+    @Test
+    fun aPendingDecisionIsNeverSentForSomeoneElse() =
+        runTest(dispatcher) {
+            refuse(429)
+            engine(launchConfig().copy(subjectId = "user-a")).apply { initialize() }.acceptAll()
+            assertNotNull(store.loadPending())
+
+            accept()
+            engine(launchConfig().copy(subjectId = "user-b")).initialize()
+
+            assertEquals(1, http.posts().size)
+            assertNull(store.loadPending())
+        }
+
+    @Test
+    fun aPendingDecisionIsNeverSentToAnotherServer() =
+        runTest(dispatcher) {
+            refuse(429)
+            engine(launchConfig().copy(subjectId = "user-a")).apply { initialize() }.acceptAll()
+
+            accept()
+            engine(launchConfig().copy(subjectId = "user-a", apiUrl = "http://staging.stub")).initialize()
+
+            assertEquals(1, http.posts().size)
+            assertNull(store.loadPending())
+        }
+
+    @Test
+    fun aNewDecisionReplacesOneStillWaiting() =
+        runTest(dispatcher) {
+            http.onConsentLookup(Fixtures.NO_CONSENT)
+            refuse(429)
+            val engine = engine(launchConfig()).apply { initialize() }
+            engine.acceptAll()
+            assertNotNull(store.loadPending())
+
+            refuse(500)
+            engine.rejectAll()
+
+            // The newer choice replaces the one waiting.
+            assertEquals(false, store.loadPending()?.cookieConsents?.get("analytics"))
+        }
+
+    @Test
+    fun aNewerRecordOnTheServerWinsOverTheWaitingDecision() =
+        runTest(dispatcher) {
+            http.onConsentLookup(Fixtures.NO_CONSENT)
+            val decidedAt = 1_700_000_000_000L
+            refuse(429)
+            engine(launchConfig(), now = { decidedAt }).apply { initialize() }.acceptAll()
+
+            accept()
+            http.onConsentLookup(Fixtures.savedConsentJson())
+            engine(launchConfig(), now = { decidedAt + 60_000 }).initialize()
+
+            assertEquals("the record dated 2026-09-01 is newer than the decision", 1, http.posts().size)
+            assertNull(store.loadPending())
+        }
+
+    @Test
+    fun anOlderRecordOnTheServerDoesNotStopTheResend() =
+        runTest(dispatcher) {
+            http.onConsentLookup(Fixtures.NO_CONSENT)
+            val decidedAt = 1_800_000_000_000L
+            refuse(429)
+            engine(launchConfig(), now = { decidedAt }).apply { initialize() }.acceptAll()
+
+            accept()
+            http.onConsentLookup(Fixtures.savedConsentJson())
+            engine(launchConfig(), now = { decidedAt + 60_000 }).initialize()
+
+            assertEquals(2, http.posts().size)
+            assertNull(store.loadPending())
+        }
+
+    @Test
+    fun aTooManyRequestsAnswerThatArrivesAfterAResetIsIgnored() =
+        runTest(dispatcher) {
+            http.onConsentLookup(Fixtures.NO_CONSENT)
+            lateinit var engine: ConsentIQEngine
+            http.on("POST", "/api/public/consent") {
+                engine.resetConsent()
+                HttpResponse(429, """{"error":"Too many requests"}""")
+            }
+            engine = engine(launchConfig()).apply { initialize() }
+
+            engine.acceptAll()
+
+            assertNull(store.loadPending())
+        }
+
+    @Test
+    fun aStoredDecisionFromAnOlderVersionIsDiscarded() =
+        runTest(dispatcher) {
+            val storage = InMemoryStorage()
+            val olderFormat = ConsentStore(storage)
+            storage.putString(
+                ConsentStore.PENDING_KEY,
+                """{"cookieConsents":{},"marketingConsents":{},"attempts":0,"createdAtMs":0}""",
+            )
+
+            assertNull(olderFormat.loadPending())
+            assertNull(storage.getString(ConsentStore.PENDING_KEY))
+        }
+
+    @Test
+    fun clearAllForgetsAPendingDecision() =
+        runTest(dispatcher) {
+            http.onConsentLookup(Fixtures.NO_CONSENT)
+            refuse(429)
+            engine(launchConfig()).apply { initialize() }.acceptAll()
+
+            store.clearAll()
+
+            assertNull(store.loadPending())
+        }
+
+    @Test
+    fun captchaIsSkippedWhenNotRequired() =
+        runTest(dispatcher) {
+            http.onConsentLookup(Fixtures.NO_CONSENT)
+            val captcha = FakeCaptchaProvider()
+            val engine = engine(captcha = captcha)
+            engine.initialize()
+
+            engine.acceptAll()
+
+            assertEquals(0, captcha.calls)
+            assertFalse(http.posts().single().has("captchaToken"))
+        }
+
+    @Test
+    fun captchaIsSkippedWithoutASiteKey() =
+        runTest(dispatcher) {
+            http.on(
+                "GET",
+                "/api/public/config/${Fixtures.PROPERTY_KEY}",
+                body = Fixtures.configJson(requireCaptcha = true, turnstileSiteKey = null),
+            )
+            http.onConsentLookup(Fixtures.NO_CONSENT)
+            val captcha = FakeCaptchaProvider()
+            val engine = engine(captcha = captcha)
+            engine.initialize()
+
+            engine.acceptAll()
+
+            assertEquals(0, captcha.calls)
+            assertFalse(http.posts().single().has("captchaToken"))
+        }
+
+    @Test
+    fun loadedConfigIsSharedOnlyForTheSamePropertyAndServer() =
+        runTest(dispatcher) {
+            http.onConsentLookup(Fixtures.NO_CONSENT)
+            val engine = engine()
+            assertNull(engine.loadedConfigFor(Fixtures.PROPERTY_KEY, "http://stub"))
+
+            engine.initialize()
+
+            assertNotNull(engine.loadedConfigFor(Fixtures.PROPERTY_KEY, "http://stub"))
+            assertNotNull(engine.loadedConfigFor(Fixtures.PROPERTY_KEY, "http://stub/"))
+            assertNull(engine.loadedConfigFor("pk_other", "http://stub"))
+            assertNull(engine.loadedConfigFor(Fixtures.PROPERTY_KEY, "http://elsewhere"))
         }
 
     @Test
@@ -430,5 +898,149 @@ class ConsentIQEngineTest {
             assertTrue(engine.subjectId.isNotEmpty())
             assertTrue(before != engine.subjectId)
             assertEquals(engine.subjectId, storage.values["consentiq_subject_id"])
+        }
+
+    private fun noticeVersion(version: Int) =
+        http.on(
+            "GET",
+            "/api/public/config/${Fixtures.PROPERTY_KEY}",
+            body = Fixtures.configJson(bannerColors = "\"noticeVersion\": $version,"),
+        )
+
+    @Test
+    fun everyRetryableFailureKeepsTheDecision() =
+        runTest(dispatcher) {
+            for (status in listOf(500, 503, 429)) {
+                store.clearAll()
+                http.onConsentLookup(Fixtures.NO_CONSENT)
+                refuse(status)
+                val engine = engine(launchConfig()).apply { initialize() }
+                engine.acceptAll()
+                assertNotNull("$status", store.loadPending())
+                assertEquals("$status", true, store.loadConsent(engine.subjectId)?.get("analytics"))
+            }
+            assertTrue(errors.isEmpty())
+        }
+
+    @Test
+    fun aFinalRefusalDropsTheDecisionAndItsLocalCopyMarksItAndTellsTheApp() =
+        runTest(dispatcher) {
+            for (status in listOf(400, 403, 404, 409, 422)) {
+                store.clearAll()
+                errors.clear()
+                http.onConsentLookup(Fixtures.NO_CONSENT)
+                refuse(status)
+                val engine = engine(launchConfig()).apply { initialize() }
+                engine.acceptAll()
+                assertNull("$status", store.loadPending())
+                assertNull("$status", store.loadConsent(engine.subjectId))
+                assertTrue("$status", store.isUnrecorded(Fixtures.PROPERTY_KEY))
+                assertEquals("$status", 1, errors.size)
+            }
+        }
+
+    @Test
+    fun whileTheMarkerStandsTheNextLaunchRestoresNothingAndAsks() =
+        runTest(dispatcher) {
+            http.onConsentLookup(Fixtures.NO_CONSENT)
+            refuse(400)
+            engine(launchConfig()).apply { initialize() }.acceptAll()
+            http.onConsentLookup(Fixtures.savedConsentJson())
+            val lookupsBefore = http.requests.count { it.url.contains("/api/public/consent/") }
+
+            engine(config().copy(onError = { errors += it })).initialize()
+
+            assertEquals(lookupsBefore, http.requests.count { it.url.contains("/api/public/consent/") })
+            assertEquals(DEFAULT_CONSENT, state.value.consent)
+            assertTrue(state.value.isSheetVisible)
+        }
+
+    @Test
+    fun theNextRecordedDecisionClearsTheMarker() =
+        runTest(dispatcher) {
+            http.onConsentLookup(Fixtures.NO_CONSENT)
+            refuse(400)
+            val engine = engine(launchConfig()).apply { initialize() }
+            engine.acceptAll()
+            accept()
+            engine.rejectAll()
+            assertFalse(store.isUnrecorded(Fixtures.PROPERTY_KEY))
+        }
+
+    @Test
+    fun anyFailureOnARequireCaptchaPropertyIsFinal() =
+        runTest(dispatcher) {
+            http.on("GET", "/api/public/config/${Fixtures.PROPERTY_KEY}", body = Fixtures.configJson(requireCaptcha = true))
+            http.onConsentLookup(Fixtures.NO_CONSENT)
+            refuse(503)
+            engine(launchConfig(), FakeCaptchaProvider { "tok" }).apply { initialize() }.acceptAll()
+            assertNull(store.loadPending())
+            assertTrue(store.isUnrecorded(Fixtures.PROPERTY_KEY))
+            assertEquals(1, errors.size)
+        }
+
+    @Test
+    fun aPendingDecisionCarriesItsNoticeVersionAndIsResentWithIt() =
+        runTest(dispatcher) {
+            noticeVersion(4)
+            http.onConsentLookup(Fixtures.NO_CONSENT)
+            refuse(429)
+            engine(launchConfig()).apply { initialize() }.acceptAll()
+            assertEquals(4, store.loadPending()?.noticeVersion)
+
+            accept()
+            engine(launchConfig()).initialize()
+            assertEquals(4, http.posts().last().getInt("noticeVersion"))
+        }
+
+    @Test
+    fun aPendingDecisionMadeUnderAnotherNoticeIsDroppedAndMarked() =
+        runTest(dispatcher) {
+            noticeVersion(4)
+            http.onConsentLookup(Fixtures.NO_CONSENT)
+            refuse(429)
+            engine(launchConfig()).apply { initialize() }.acceptAll()
+
+            noticeVersion(5)
+            accept()
+            engine(launchConfig()).initialize()
+
+            assertEquals(1, http.posts().size)
+            assertNull(store.loadPending())
+            assertTrue(store.isUnrecorded(Fixtures.PROPERTY_KEY))
+            assertEquals(DEFAULT_CONSENT, state.value.consent)
+        }
+
+    @Test
+    fun aFinalRefusalOfAResendTellsTheApp() =
+        runTest(dispatcher) {
+            http.onConsentLookup(Fixtures.NO_CONSENT)
+            refuse(429)
+            engine(launchConfig()).apply { initialize() }.acceptAll()
+            refuse(422)
+            engine(launchConfig()).initialize()
+            assertEquals(1, errors.size)
+            assertTrue(store.isUnrecorded(Fixtures.PROPERTY_KEY))
+        }
+
+    @Test
+    fun resetClearsTheMarkerAndThePendingDecision() =
+        runTest(dispatcher) {
+            http.onConsentLookup(Fixtures.NO_CONSENT)
+            refuse(400)
+            val engine = engine(launchConfig()).apply { initialize() }
+            engine.acceptAll()
+            engine.resetConsent()
+            assertFalse(store.isUnrecorded(Fixtures.PROPERTY_KEY))
+            assertNull(store.loadPending())
+        }
+
+    @Test
+    fun aLocalCopyWrittenForAnotherSubjectIsNotInherited() =
+        runTest(dispatcher) {
+            store.saveConsent(mapOf("necessary" to true, "analytics" to true), "user-a")
+            engine(config(subjectId = "user-b")).initialize()
+            assertEquals(DEFAULT_CONSENT, state.value.consent)
+            assertTrue(state.value.isSheetVisible)
         }
 }

@@ -1,5 +1,46 @@
 # Changelog
 
+## Unreleased
+
+- A decision ConsentIQ has not recorded is kept for a later resend on no answer, a `5xx`, `429` or an unanswered challenge, not only on `429`, and a newer decision replaces it. A `400`, `403`, `404`, `409` or `422`, or any failure on a property that requires a captcha on every submit, drops it with its local cache, fires `onError` (`consent_refused`), and the next launch asks again with nothing granted. A kept decision carries the notice version it was made under and is dropped when the notice or the categories change.
+- The local cache is written before the post and belongs to its subject id; a different subject id shows the sheet again.
+- `identityToken` is sent only with a subject id you supply. `FormConsent` takes `identityFor` and sends the signed identifier when the subject is that identifier written differently.
+- A restore refused with `403` drops the local cache, fires `onError` and shows the sheet.
+- A supplied subject id containing `:` no longer throws from `ConsentIQConfig`: `onError` fires with `invalid_subject_id` and consent stays local. `FormConsent.submit()` returns `null` for such an id.
+- The in-app TCF page receives the `identityToken` for a subject id you supply.
+- A TCF decision the in-app page could not record with ConsentIQ (`recorded: false`) applies for the session, but is not kept: the local cache and the stored TC string are dropped, the next launch asks again with nothing granted, and `onError` fires with `consent_refused` and the record's HTTP status.
+
+- When ConsentIQ answers a submit with `428 captcha_required`, which it can do on any property when a submit looks automated, the SDK solves one Cloudflare Turnstile challenge and submits once more. `FormConsent.submit()` does the same.
+- The captcha page is loaded with the property key, so a token is accepted only for that property.
+- A challenge stays hidden unless Cloudflare asks for interaction; then it is shown in a dialog with the system Cancel button. Once shown it waits up to 2 minutes. Cancelling, a failure or a timeout sends nothing more, keeps the local state and logs the usual captcha warning.
+- Play Integrity: each submit sends `X-ConsentIQ-Integrity`, a Play Integrity token from a classic request whose nonce is the SHA-256 of the exact request body. ConsentIQ verifies it with the response keys you download from Play Console. Where the check cannot run (no Play services, the daily quota spent), nothing is sent and ConsentIQ asks for a captcha instead. The new `ConsentIQConfig.playIntegrityCloudProjectNumber` is only needed for an app also distributed outside Google Play. Adds `com.google.android.play:integrity`.
+- A submit ConsentIQ answers with `429` is kept and sent once more on the next launch, without a captcha; it is dropped once recorded, after three attempts, or after seven days. A `400`, `404`, `409` or `422` answer drops it. A `403` (an identity token that did not verify, or one the property requires) fires `onError` with code `consent_refused` and is not retried. It is resent only for the same subject id, property and API URL; a newer decision replaces it; a newer record on ConsentIQ wins over it; and a `429` that arrives after `resetConsent()` is ignored.
+- A subject id you supply (`ConsentIQConfig.subjectId`, `FormConsent`) is sent with `subjectSource: "site"` on every write, and to the in-app TCF page, so ConsentIQ stores it apart from the ids the SDK generates. A supplied id containing `:` is refused when the config or form is created, with an `IllegalArgumentException`. Its stored consent is restored with `POST /api/public/consent/{key}/{subjectId}` and the `identityToken`, which reads only records ConsentIQ verified; without a token the SDK does not look it up and relies on the copy on the device. Generated ids are still restored with the open lookup.
+- A Play Integrity call that is cancelled or takes longer than 10 seconds falls back to the captcha instead of holding the submission.
+- `ConsentIQConfig.identityToken`, `FormConsent(identityToken = ...)` and `ConsentSubmission.identityToken` send your server's signature for the person with each submit, unread by the SDK.
+- `ConsentSheet` uses the banner's `bannerBgColor` and `bannerTextColor` from the dashboard when present (new optional `BannerConfig` fields), and keeps the app's Material theme when they are absent. Invalid hex colors, including the brand color, are now ignored.
+- IAB TCF in-app support. When the property has TCF on, the SDK writes the `IABTCF_*` keys to the app's default `SharedPreferences` and shows ConsentIQ's hosted TCF screens full-screen in a web view, in place of the category sheet, for visitors where GDPR applies. Where it does not apply, the SDK writes `IABTCF_gdprApplies = 0` and keeps the sheet.
+- `ConsentIQ.showSheet()` re-opens the TCF screens when TCF is active. `ConsentIQ.showTcfPreferences()` does the same and returns `false` when TCF is not active.
+- New `ConsentIQState.isTcfActive` and `ConsentIQ.isTcfActive`.
+- New `onError(ErrorInfo)` callback on `ConsentIQConfig`. If the TCF screens cannot run, it fires and the SDK falls back to the category sheet; after a transient failure the next open tries the TCF screens again.
+- `PropertyConfig` has a new optional `tcf` field (`TcfSettings`).
+- `resetConsent()`, and consent the server reports as expired, also clear the stored TCF decision and remove its `IABTCF_*` keys, keeping `IABTCF_CmpSdkID`, `IABTCF_CmpSdkVersion` and `IABTCF_gdprApplies`. Keys are only removed while `IABTCF_CmpSdkID` is still the one this SDK wrote.
+- If TCF is later turned off for the property, the next start removes every `IABTCF_*` key this SDK wrote, again only while `IABTCF_CmpSdkID` is still its own.
+
+## 1.1.0
+
+- Properties with "Require CAPTCHA" on now accept consent from the SDK. Before each submit, the SDK runs Cloudflare Turnstile invisibly in a hidden web view and sends the token with the consent. If the check fails or needs user interaction, nothing is sent, the local state is kept, and the SDK logs `[ConsentIQ] Captcha check failed; consent not submitted`.
+- `FormConsent` runs the same check, using the web view that `ConsentIQ.init` sets up.
+- `ConsentSubmission` has a new optional `captchaToken` field.
+- The startup warning that mobile SDKs cannot satisfy a captcha is gone.
+- The core now depends on `androidx.webkit` 1.17.1.
+
+## 1.0.1
+
+- Debug logs no longer include the subject id.
+- The example app turns on debug logging in debuggable builds only.
+- README: a caller-supplied `subjectId` must be random and unguessable.
+
 ## 1.0.0
 
 Initial release.
